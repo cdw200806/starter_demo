@@ -1,0 +1,555 @@
+initTable
+
+```java
+    private final Node<K,V>[] initTable() {
+        Node<K,V>[] tab; int sc;
+        while ((tab = table) == null || tab.length == 0) {
+            if ((sc = sizeCtl) < 0)
+                Thread.yield(); // lost initialization race; just spin
+            else if (U.compareAndSetInt(this, SIZECTL, sc, -1)) {
+                try {
+                    if ((tab = table) == null || tab.length == 0) {
+                        int n = (sc > 0) ? sc : DEFAULT_CAPACITY;
+                        @SuppressWarnings("unchecked")
+                        Node<K,V>[] nt = (Node<K,V>[])new Node<?,?>[n];
+                        table = tab = nt;
+                        sc = n - (n >>> 2);
+                    }
+                } finally {
+                    sizeCtl = sc;
+                }
+                break;
+            }
+        }
+        return tab;
+    }
+
+```
+1.sizeCtl
+-1时代表在初始化，所以通过CAS+自旋方式让只有一个线程在初始化。
+sc = sizeCtl = 0,8等。 相等则置为-1。此时将其当做一个竞争状态使用。
+2.在初始化前，sizeCtl 为0 或者初始化时tableForSize计算出的上2幂初始值。
+   此处如果是0根据三目运算会被重置为默认值16.
+3.初始化时，sizeCtl记录的关于要初始化的目标值部分，赋值给了sc。此时sizeCtl
+   在初始化的过程中一值保持为-1。
+4.当table被初始化为n=sc的大小之后。
+   sc = n- (n>>>2) 这里的计算与扩容因子的乘积秀了一把。
+5.finally 块理，sizeCtl 确实最终变成了当前会触发扩容的阈值。
+
+总结：在初始化前，sizeCtl是个数值。它是0或者是根据初始化时编码人员填入的数字计算出最靠近又大于它的2的n次方幂。 在初始化的入口处，他就作为一个自旋竞争的一个状态。如果不小于0就进入代码使用CAS将它变成-1。相当于加了一个乐观锁。这样保证初始化只有一个线程。即初始化中sizeCtl一直是-1。等到初始化结束，sizeCtl变成了触发扩容的阈值。
+
+再总结下：一般就是从 0  ->-1 -> 12的变化。而-1是个短状态。（初始化过程）
+或者      8->-1->6  (new时的初始值为4，tableForSize为8)
+
+
+transfer:
+        if ((stride = (NCPU > 1) ? (n >>> 3) / NCPU : n) < MIN_TRANSFER_STRIDE)
+// subdivide range
+这句话，计算每个线程所需搬迁的桶。为什么n要右移3位后再除以NCPU。举个例子，愚公移山。有NCPU个人要移动有n块石头的大山。假设石头有1024块，人有4个。如果不右移，就代表每个人要搬256个石头。而且搬完后，任何人都无法帮其他人工作。等到搬的最慢的人结束之后，迁移结束。由于每个桶上挂载的key个数不一定相同，所以这样的分工明显没有充分的利用多核优势。而如果n右移3位，代表每个人做完预期分给他的任务的八分之一就可以先交一波差，再重新领取任务。最后工作快的人，就能帮工作慢的人，让最后等待浪费的时间粒度变小。
+
+```java
+    static final int spread(int h) {
+        return (h ^ (h >>> 16)) & HASH_BITS;
+    }
+```
+
+扰动函数^ 这个是6对应的特殊符号，意思是异或。总之效果就是低位的部分和高位藕合一下，让最终的hash值不要只取决于低位。原因是当map的size较小时，相应的散列，大量使用了低位，这样就属于一种不太好的散列，因为有散列不均匀的风险。充分利用整个散列的高位与地位，相当于散列函数充分考虑了这个对象（散列值）的整体情况，而不是只关注低位的状态。一个好的散列应该是充分考虑一个对象的特征。这样就会增强它的随机性，均匀性。以结果的乱，以无规律，但结果又与对象相关的来达成一种均匀。举个例子，假设现在有这么一帮数据，低位都一样，高位都不一样。如果不扰动一下，按照hashmap的类似求模的运算，所有的数据都被散列到一个桶上，造成严重的散列冲突。这就是散列函数不佳的表现。至于HASH_BITS。它是一个最高位为0，剩余31位为1的int。最终效果就是去除散列值的符号位。让所有的散列值都为正。与几个预留的负散列区别开来。MOVED = -1：表示当前桶正在扩容迁移；TREEBIN = -2：表示当前桶挂载的是红黑树；RESERVED = -3：预留节点。
+
+
+```java
+    private static final Unsafe U = Unsafe.getUnsafe();
+```
+
+   关于Unsafe. Unsafe是JDK底层处理并发的工具，提供了CAS，直接操作内存等底层功能，可以绕过Java的安全机制，通常用来实现高性能的并发数据结构，如ConcurrentHashMap。普通程序员应谨慎使用。可以使用JUC中的原子类来替代。
+    除了CAS和内存偏移量操作。还支持内存屏障。内存屏障分读屏障，写屏障。storeFence  SS  loadFence  LL等方法。 SL   storeLoad Unsafe.fullFence()是最强的屏障，不区分读写操作。要求立即冲刷写缓冲区并失效各个线程的缓存。LS 多数CPU自动支持。
+    volatile写，sychonized结束后都会自动插入SL。
+    JVM不直接提供方法LS 。
+    Unsafe只有 SS LL SL方法没有LS  一般不需要考虑LS
+    为何一般不需要显式使用 LS 屏障？
+    X86自动支持; java编译器在生成代码时，通过禁止编译期重排序隐式实现LS。
+    volatile.的实现
+    volatile写前SS，写后SL
+    volatile读后LL，LS，强调volatile读之后的操作不能先于volatible读。尤其volatile的写更不能重排到volatile读之前。
+    SL是全局性的缓存刷新。而SS LL LS强调的是指令不能乱序。
+
+   volatile:
+    (1) 懒汉式二次检查锁的场景，要求代理类实例化完成再赋值给volatible变量（代理）。防止对volatile的写（代理类变成非NULL，即地址给到了vo变量），重排到实例化完成之前。即代理对象已经不是NULL（实际是说代理对象的地址不是NULL），但它的子属性实际还没初始化好，后续其他线程使用可能出现空指针。   体现了vo写前的SS作用。
+```java
+    public class LazySingleton {
+    // 必须使用volatile修饰单例对象
+    private static volatile LazySingleton instance;
+
+    // 私有构造方法
+    private LazySingleton() {}
+
+    // 双重检查锁获取实例
+    public static LazySingleton getInstance() {
+        if (instance == null) {                // 第一次检查（无锁）
+            synchronized (LazySingleton.class) { // 加锁
+                if (instance == null) {        // 第二次检查（加锁后）
+                    instance = new LazySingleton(); // 实例化
+                    //这里一定要 new完再赋值给instance。体现了volatible变量 instance写之前插入的 STORE STORE屏障
+ 让new涉及到的写必须完成。（等号右边的先执行）                }
+            }
+        }
+        return instance;
+    }
+}
+```
+
+ （2）while(vob){ vob = false;} 这个代码显然vob的写不能到vob的读之前。体现了vo读后插入LS的作用。
+
+
+
+```java
+    static final <K,V> Node<K,V> tabAt(Node<K,V>[] tab, int i) {
+        return (Node<K,V>)U.getReferenceAcquire(tab, ((long)i << ASHIFT) + ABASE);
+    }
+```
+
+这里ABASE是指首个元素距离数据对象起始地址的偏移量。这部分内容包含对象头（类信息，GC信息），数组长度。其中对象头在未开启压缩的64位JVM中是12字节。则ABSE总共16字节。压缩后为12字节。具体ABASE的计算是一个native方法计算的。
+ASHIFT 单个元素大小。其字节数也是2的幂次。这样就方便用移位计算偏移量。
+这里利用了Unsafe的getReferenceAcquire原子操作（getReferenceVolatile native方法），实现无锁并发访问。
+
+```java
+    private static final int ASHIFT;
+
+    static {
+        int scale = U.arrayIndexScale(Node[].class);
+        if ((scale & (scale - 1)) != 0)
+            throw new ExceptionInInitializerError("array index scale not a power of two");
+        ASHIFT = 31 - Integer.numberOfLeadingZeros(scale);
+
+        // Reduce the risk of rare disastrous classloading in first call to
+        // LockSupport.park: https://bugs.openjdk.org/browse/JDK-8074773
+        Class<?> ensureLoaded = LockSupport.class;
+
+        // Eager class load observed to help JIT during startup
+        ensureLoaded = ReservationNode.class;
+    }
+```
+这里Node实际指键值对的大小，包括key value hash next 四个部分。如下：
+
+```java
+    static class Node<K,V> implements Map.Entry<K,V> {
+        final int hash;
+        final K key;
+        volatile V val;
+        volatile Node<K,V> next;
+```
+然后arrayIndexScale这个方法其实是对对应的字节数取上整（不是按整数取，而是按2的多少次幂取）。让scale是能包纳Node但是又不至于浪费的最小2的n次幂。具体算法是native的，但是我猜它与tableForSize类似，执着于位运算。
+
+```java
+        if ((scale & (scale - 1)) != 0)
+            throw new ExceptionInInitializerError("array index scale not a power of two");
+        ASHIFT = 31 - Integer.numberOfLeadingZeros(scale);
+```
+这里是根据scale 也就是单个元素大小计算偏移位数。这里的异常校验要求scale必须是2的n次幂。只有2的n次幂才能满足它-1与上它自己是0。之后ASHIFT应该是log2（scale） 但是显然Integer类的作者不想做对数运算。它采用了31-前导0的办法来计算。比如 scale为4. 那么它的二进制是这个样子 0000000....100 显然如果用32-前导0会得到3。但实际上4对应的偏移位数是2。所以用31来减。最终这个ashift就可以对i进行左移运算。比如i是2。字节大小是4。当我们访问i=2也就是第三个元素时，显然不是字节偏移2个字节。而是 i左移两位（实际就是乘以2的平方）。变成8。偏移量8与 2*4一致。即一个元素是4个字节，对应在地址跳跃的时候，要从二进制的第三位开始跳。
+
+```java
+    @IntrinsicCandidate
+    public static int numberOfLeadingZeros(int i) {
+        // HD, Count leading 0's
+        if (i <= 0)
+            return i == 0 ? 32 : 0;
+        int n = 31;
+        if (i >= 1 << 16) { n -= 16; i >>>= 16; }
+        if (i >= 1 <<  8) { n -=  8; i >>>=  8; }
+        if (i >= 1 <<  4) { n -=  4; i >>>=  4; }
+        if (i >= 1 <<  2) { n -=  2; i >>>=  2; }
+        return n - (i >>> 1);
+    }
+
+```
+这里讲一下前导码的计算。看风格有点像tableForSize。具体分析的话，如果i<0,则是负数，最高位为符号位为1，自然没有前导0。如果是0，说明32位都是0。
+接着是正数的情况。初始化为n=31。如果i大于等于2的16次方此时起码第17位上挂了一个1，那么把低位的16位干掉。前导对应去掉16位。再算剩下的。看完第一行大概理解了它是想用一种类似2分的思想，减少遍历的次数。然后这个数不管是不是因为右移16位还是本身就小于2的16次方，现在它都是最大值不会达到2的16次方。变成了一个长度限制为2字节的数。
+继续迭代。直到高位部分处理的差不多了，只剩下最后两位了。
+最后两位无外乎00 01 10 11，需要注意的是10 11这两种情况的高位1，不会是来自于最高位的1。因为符号位的1已经被我们排除。所以这些10,11是本身就比较小的情况。比如i一开始就是3。anyway，此时想计算这个数有几个前导0也很简单。把他右移一位。如果是1。说明我还是多估算了一个前导0，就把它扣掉。如果像00 01这种就是我之前没有高估前导0的个数，就留在这里。最终完成一个完整的方法。
+总结思想：cucurrentHashMap在计算前导0的个数的时候，细节如下。先处理i<=0的情况，较简单。然后是i>0的情况，预设n=31。伺候采用类似二分法的思想，先计算i是否>=2的16次方。如果是那么抛弃i的低16位。即右移16位后继续运算。这种情况就是多估了前导0，相应的对n扣减16个。如果n小于2的16次方，也是一起继续下面的运算，只是这种情况没有扣减对应的n。依次计算16,8,4,2，最终迭代到1后退出。
+
+```java
+    static {
+        int scale = U.arrayIndexScale(Node[].class);
+        if ((scale & (scale - 1)) != 0)
+            throw new ExceptionInInitializerError("array index scale not a power of two");
+        ASHIFT = 31 - Integer.numberOfLeadingZeros(scale);
+
+        // Reduce the risk of rare disastrous classloading in first call to
+        // LockSupport.park: https://bugs.openjdk.org/browse/JDK-8074773
+        Class<?> ensureLoaded = LockSupport.class;
+
+        // Eager class load observed to help JIT during startup
+        ensureLoaded = ReservationNode.class;
+    }
+```
+这里再回到ASHIFT的初始化代码。这里我们发现了关于对LockSupport和ReservationNode两个类的访问。在静态代码中对类字节码对象进行访问，可以触发类在JVM启动时就加载这两个类。减少运行时加载+并发访问导致的潜在问题。其中LockSupport是java并发包中的核心工具类，用于阻塞与唤醒。ReservationNode这个类用于占位或预留操作的节点类。
+
+JIT Just-In-Time Compiler是 JVM的即时编译器，指将频繁执行的热点字节码编译+优化后缓存为本地机器码。后续再次执行即可提高效率。
+
+JVM启动时，会加载核心类，拓展类。而应用类会在运行时再加载。
+类加载时，不会自动的加载内部类。而ReservationNode是ConcurrentHashMap的静态内部类。Node也是，ReservationNode继承自Node
+
+helpTransfer
+int rs = resizeStamp(tab.length) << RESIZE_STAMP_SHIFT;
+
+```java
+    /**
+     * Returns the stamp bits for resizing a table of size n.
+     * Must be negative when shifted left by RESIZE_STAMP_SHIFT.
+     */
+    static final int resizeStamp(int n) {
+        return Integer.numberOfLeadingZeros(n) | (1 << (RESIZE_STAMP_BITS - 1));
+    }
+
+```
+这个rs的核心作用是有一个扩容版本号的作用。比如n=16。那么它的前导0个数就是32- 5 =27.
+然后 |是按位与。这样在最高位就是1。是一个标志位。这样rs的高16位就是一个1带上本次数组元素个数对应二进制的前导码。前导码越小。说明数组越大。默认16。第一次扩容时。这个数字就是1000000... 11011  ---》27=32-1-4 。另外低16位是参与扩容的线程数。所以rs是个复合结构。
+![在这里插入图片描述](https://i-blog.csdnimg.cn/direct/5512f62d5f3849c7aebb2616aff3d67f.png)
+可以简述为一位标志位，加扩容版本号，加扩容线程数。
+
+
+继续分析helpTransfer的代码：
+
+```java
+    final Node<K,V>[] helpTransfer(Node<K,V>[] tab, Node<K,V> f) {
+        Node<K,V>[] nextTab; int sc;
+        if (tab != null && (f instanceof ForwardingNode) &&
+            (nextTab = ((ForwardingNode<K,V>)f).nextTable) != null) {
+            int rs = resizeStamp(tab.length) << RESIZE_STAMP_SHIFT;
+            while (nextTab == nextTable && table == tab &&
+                   (sc = sizeCtl) < 0) {
+                if (sc == rs + MAX_RESIZERS || sc == rs + 1 ||
+                    transferIndex <= 0)
+                    break;
+```
+这里rs是个负数。但我们预算实际拿机器码运算就行。不需要管它rs整体的数值是多少。 rs此时高16位是一个标志位加上版本号。就算它是个负数，考虑到补码，这个补码的机器码也就是 10000...版本号00000。不需要管rs等于多少。rs+MAX_RESIZERS 也就是 rs+65535 这个两边都是补码的机器码，只要加起来就行了。变成 1000...版本号FFFF。 补码看起来越大，代表负的程度越低。这个计算上是没错的。但是我们不需要关注这个数值具体是多少。只需要知道低16位当正数看就是n+1。这足够。实际代码也就是把低十六位当正数用的。属于是int类型被玩烂了。。。
+这里退出的情况一个是当前sc参与扩容的线程数是65534达到上限。一个是sc==rs+1 也就是说当前没有线程在做扩容，也就是说之前已经有线程帮做扩容，最后发现没活干了，这个sc降下去了。那既然没人在干活了，说明没人干了，那我也不干。最后一个就是迁移索引到0了。众所周知，这东西就是分派任务用的，而且是倒着数的。所以到0了就代表工作没了。so，退出。
+（1）这里我是断言了sizeCtl这个东西，应该是会在有新线程帮忙的时候触发+1。而且，初始值，一定是RS+2。这样能保证让sizeCtl的高16位与RS的高16位对应起来，方便这里比较。另外低十六位，既然规定了数值是扩容线程数+1。那么第一个线程参与扩容时，这个地方就应该是2。这是一个待确认的断言，把握较高。
+（2）之前看到元宝解释说从2开始是为了防止 10000000000000....1 与 初始化的-1混淆。但是显然这个地方如果是1它的int结果不是-1。而init方法是显式的将sizeCtl置成了-1。这里待确认。是个没什么把握的迷惑点。
+
+
+transfer过程中有建立一个fwd对象。这个东西继承自Node.但是它集成了一个nextTab这样的Node数组。在初始化的时候，我们看到它调用父构造方法，把hash值设置成了迁移中。
+```java
+        ForwardingNode<K,V> fwd = new ForwardingNode<K,V>(nextTab);
+```
+
+```java
+    static final class ForwardingNode<K,V> extends Node<K,V> {
+        final Node<K,V>[] nextTable;
+        ForwardingNode(Node<K,V>[] tab) {
+            super(MOVED, null, null);
+            this.nextTable = tab;
+        }
+
+```
+Fwd只有一个find方法是属于自己独有的。简述下ForwardingNode的作用：标识当前桶已迁移完毕，转发查询请求到新表。所以我理解只有在扩容过程中，部分桶完成，部分桶没完成才会查到这种Node。
+对于这个方法的理解，简单写一点注释。
+
+```java
+        Node<K,V> find(int h, Object k) {
+            // loop to avoid arbitrarily deep recursion on forwarding nodes
+            outer: for (Node<K,V>[] tab = nextTable;;) {
+            //这里的outer标签，是为了当查询请求转发到新表，新表也在做扩容时，能够正确的处理。类似递归处理。
+                Node<K,V> e; int n;
+                if (k == null || tab == null || (n = tab.length) == 0 ||
+                    (e = tabAt(tab, (n - 1) & h)) == null)
+                    //返回null的几种情况，挺好理解的。
+                    return null;
+                for (;;) {
+                    int eh; K ek;
+                    if ((eh = e.hash) == h &&
+                    //这里ek == k  ek equals k都可以返回e。 比如key是 Integer类型。那么==就成立。如果是Object类型，比如String Student 作key。那么就会走equals.
+                        ((ek = e.key) == k || (ek != null && k.equals(ek))))
+                        return e;
+                    if (eh < 0) {
+                    //eh 小于0的几种情况，-1在做扩容 -2代表桶上挂载红黑树。 -3为预留节点。这里reserverNode不太了解，待后续学习中继续体会。
+                        if (e instanceof ForwardingNode) {
+                        //如果是ForwardingNode说明下一个表也在做扩容。所以转发到下下个表。
+                            tab = ((ForwardingNode<K,V>)e).nextTable;
+                            continue outer;
+                        }
+                        else
+                        //其他情况比如 -2红黑树，直接调e.find
+                            return e.find(h, k);
+                    }
+                    if ((e = e.next) == null)
+                        //nexttable里面对应的桶 这里不是红黑树自然就是链表 链表没有next就是遍历结束。就返回查找失败。
+                        return null;
+                }
+            }
+        }
+```
+
+transfer 链表
+
+```
+                       if (fh >= 0) {
+                            int runBit = fh & n;
+                            Node<K,V> lastRun = f;
+                            for (Node<K,V> p = f.next; p != null; p = p.next) {
+                                int b = p.hash & n;
+                                if (b != runBit) {
+                                    runBit = b;
+                                    lastRun = p;
+                                }
+                            }
+                            if (runBit == 0) {
+                                ln = lastRun;
+                                hn = null;
+                            }
+                            else {
+                                hn = lastRun;
+                                ln = null;
+                            }
+                            for (Node<K,V> p = f; p != lastRun; p = p.next) {
+                                int ph = p.hash; K pk = p.key; V pv = p.val;
+                                if ((ph & n) == 0)
+                                    ln = new Node<K,V>(ph, pk, pv, ln);
+                                else
+                                    hn = new Node<K,V>(ph, pk, pv, hn);
+                            }
+                            setTabAt(nextTab, i, ln);
+                            setTabAt(nextTab, i + n, hn);
+                            setTabAt(tab, i, fwd);
+                            advance = true;
+                        }
+```
+lastRun+runbit 只优化了最后一段重复的runbit节点，节省头插。前面的即使是AAABBBAAAAAA。前六个元素只能一个一个头插。
+
+扩容自旋中关于控制部分的代码的理解。采用插入注释的方式写一写。
+```java
+        boolean advance = true;//while (advance)方法体，整体上是在找工作，占工作，所以advance为true就代表当前线程继续找工作。如果CAS占领stride成功，就成功修改transferIndex.此时advance变成false。进入实际工作环节。
+        boolean finishing = false; // to ensure sweep before committing nextTab
+        //官方加的注释，我暂且理解为提交nextTab前确保任务完成。
+        for (int i = 0, bound = 0;;) //自旋,这里是旋到transferindex为0为止。即所有搬迁工作完成。
+            Node<K,V> f; int fh;
+            while (advance) {//内层的自旋，这里是旋到找到一份大小为stride的工作为止。另外每处理完一个桶，也会走到这个里面。就是说每处理完一个桶，我重新梳理一下工作内容。是否再找一份工作。或者去把当前工作的下一个桶再做一下。异或是看看是不是已经结束了。
+                int nextIndex, nextBound;
+                if (--i >= bound || finishing)//根据找到工作的代码来分析，nextbound是下一份工作干到哪。然后就会赋值给bound。所以--i>= bound 这里是说当前stride工作还没结束。所以你继续去干吧。如果结束了也要跳出这个自旋
+                    advance = false;
+                else if ((nextIndex = transferIndex) <= 0) {//transferIndex <=0 那自然是要结束。这里把i置为了-1不太明确有何意义。或许是说其他线程把活都干完了，那我下标也置位一下。可能哪里的判断就可能用到i。
+                    i = -1;
+                    advance = false;
+                }
+                else if (U.compareAndSetInt
+                         (this, TRANSFERINDEX, nextIndex,
+                          nextBound = (nextIndex > stride ?
+                                       nextIndex - stride : 0))) {
+                    bound = nextBound;//CAS抢工作。找到下个工作目标。(一个stride到哪个桶，结束桶的位置就是bound)
+                    i = nextIndex - 1;//这里nextIndex 来自transferIndex。那么i就是第一个还未完成的一个桶。
+                    advance = false;//抢到工作就去干活，如果被别人抢了，那就 while (advance)继续找工作
+                }
+            }
+            if (i < 0 || i >= n || i + n >= nextn) {//i<0 是结束了。i>=n暂时想不到什么情况会这样
+                int sc;
+                if (finishing) {//结束的处理
+                    nextTable = null;
+                    table = nextTab;
+                    sizeCtl = (n << 1) - (n >>> 1);//sizeCtl恢复常态形式，下次触发扩容的阈值
+                    return;
+                }
+                if (U.compareAndSetInt(this, SIZECTL, sc = sizeCtl, sc - 1)) {//本线程从sc并发工作线程里面扣除。
+                    if ((sc - 2) != resizeStamp(n) << RESIZE_STAMP_SHIFT)
+                        return;//扣完之后，如果没有扣光。说明还有线程在工作，但已经没有工作了。直接结束helptransfer方法。
+                    finishing = advance = true;//这里是说扣光了，而且我本身就是最后一个线程。负责置了finishing的值。
+                    i = n; // recheck before commit
+                    //这里官方说要再检查一遍。最后一个离开教室的负责检查是否关灯锁门。或者说检查一下是否所有的桶都已经放上了forwordNode。如果有漏网之鱼就再处理处理。通过while advance 的--i >= bound 就会触发每个桶检查一遍。直到再次回到i<0 通过finishing退出。
+                }
+            }
+            else if ((f = tabAt(tab, i)) == null)
+                advance = casTabAt(tab, i, null, fwd);//如果是空，直接放一个fwd
+            else if ((fh = f.hash) == MOVED)//如果已经处理过了，当前桶就不管了。比如临退出前的检查就会走这块代码
+                advance = true; // already processed
+
+```
+
+TreeBin的实例化代码，即构造方法，经过分析，我认为在使用这个方法之前，已经将链表的各个Node转化为了TreeNode类型，并且使用next指针将之串联起来。使用这个构造方法，能将一个TreeNode链表变成一颗红黑树 。下面对这个方法添加一些注解。
+
+```java
+        TreeBin(TreeNode<K,V> b) {
+            super(TREEBIN, null, null);//hash =-2标记为一颗树
+            this.first = b;//first指向第一个节点，这个我猜是为了在某些时候需要兼容链表形式的遍历。
+            TreeNode<K,V> r = null;//根节点
+            for (TreeNode<K,V> x = b, next; x != null; x = next) {//这里遍历整个b链表
+                next = (TreeNode<K,V>)x.next;//只用于处理循环,也就是上一行
+                x.left = x.right = null;//前文猜测输入数据只是对TreeNode使用next维护了顺序。所以还没有维护左右孩子，所以初始化为null。当然也有可能是对数据进行重置，清洗。
+                if (r == null) {//如果还没有建立根节点，先把根节点建立起来。
+                    x.parent = null;//根节点无父母节点
+                    x.red = false;//根节点标记为黑色。但是感觉boolean默认就是false。
+                    r = x;//是第一个节点。暂且放到根节点。
+                }
+                else {
+                    K k = x.key;//已经有了根节点。x是使用next遍历的链表中的节点，姑且说成当前处理节点，记录一下它的key，简称为k
+                    int h = x.hash;//简记hash
+                    Class<?> kc = null;//有了根节点之后，下面的代码用一个死循环来寻找x合适的位置。出口就是找到合适的子节点。看代码是会重置p为其中一个孩子，如果没找到合适空位给X就会继续递归遍历。当然是按照hash的排序的顺序，来保证往下寻找位置的时候是按顺序的。而这个kc就是提前声明一下变量。在这种循环中作为父类类型起到一个存储作用。后续会单独讲compare方法。这里跳过
+                    for (TreeNode<K,V> p = r;;) {//死循环 实际由后面p = (dir <= 0) ? p.left : p.right 达成循环体，这样算下来就是一个二重循环。第一重是在遍历list。第二重是在树中给当前X寻找合适的叶子节点位置。
+                        int dir, ph;//dir是一个大小或者相等的标识，ph是P的hash
+                        K pk = p.key;//简称pk
+                        if ((ph = p.hash) > h)//没有hash冲突，直接比较hash值 如果目标节点x比较小。小于寻找最终位置过程中路过的p，记录为-1
+                            dir = -1;
+                        else if (ph < h)
+                            dir = 1;//反之记录为1
+                        else if ((kc == null &&//初始就是null。这里看起来可能比较怪异。就是说为什么它不提前计算好kc是不是null。这里kc是null就代表目标元素未实现比较接口。我猜测是因为源作者想提升性能，这个comparableClassFor方法还是比较复杂，如果能直接通过比较hash得出结果就省略跑ccf的时间。然后这里利用kc==null来保证就算计算也只计算一次。因为经过分析，在处理X的一次循环遍历树中k始终是k并未替换为别的元素。始终代表着目标元素x。总之kc==null 那就是未实现比较接口。
+                                  (kc = comparableClassFor(k)) == null) ||//未实现比较接口，那就直接强制计算。后面再说强制计算的细节。
+                                 (dir = compareComparables(kc, k, pk)) == 0)//这里就是通过比较接口比较的，比较结果如果相等也会强制计算。
+                            dir = tieBreakOrder(k, pk);//强制计算。后面分析细节，通过这个方法一定能比较出大小。
+                        TreeNode<K,V> xp = p;//这个是方便记录p。因为马上p要变成p的孩子了
+                        if ((p = (dir <= 0) ? p.left : p.right) == null) {//如果x小那就往左孩子方向找，反之右孩子
+                            x.parent = xp;//进入到这里是说孩子是null,那就算找到合适位置了。如果没进来就继续从树往下遍历。
+                            if (dir <= 0)//如果小，就变成左孩子
+                                xp.left = x;
+                            else
+                                xp.right = x;//如果大就当右孩子
+                            r = balanceInsertion(r, x);//在叶节点插入了一个元素，做balanceInsertion
+                            break;//break跳出的是处理x的循环。后续自然还要处理完整个list。
+                        }
+                    }
+                }
+            }
+            this.root = r;//root要使用banlance后的root
+            assert checkInvariants(root);//一个断言，具体逻辑后续再细品。
+        }
+
+```
+
+这里是分析x是否可比较的代码。必须是自己实现了泛型是自己类的Comparable接口。
+```java
+    /**
+     * Returns x's Class if it is of the form "class C implements
+     * Comparable<C>", else null.
+     */
+    static Class<?> comparableClassFor(Object x) {
+        if (x instanceof Comparable) {
+            Class<?> c; Type[] ts, as; ParameterizedType p;//这个Type是没有擦除泛型的type
+            if ((c = x.getClass()) == String.class) // bypass checks
+                return c;//String实现了comparable，又很常用。所以bypass
+            if ((ts = c.getGenericInterfaces()) != null) {//如果有一般化接口数组。
+                for (Type t : ts) {//遍历。一般化接口数组，既有可能又普通Type也有可能有未擦除泛型Type
+                    if ((t instanceof ParameterizedType) &&//这里只关注未擦除泛型type，因为我们在找comparable
+                        ((p = (ParameterizedType)t).getRawType() ==//原始类型是Comparable
+                         Comparable.class) &&
+                        (as = p.getActualTypeArguments()) != null &&//并且真实类型是x.class
+                        as.length == 1 && as[0] == c) // type arg is c
+                        return c;//此时返回此类型。
+                }
+            }
+        }
+        return null;
+    }
+```
+
+getGenericInterfaces 返回的是没有擦除泛型的类信息：ParameterizedType
+getInterfaces 返回的是擦除泛型的Class信息(Interface 枚举 Class都属于引用类型，JVM都会生成.class（字节码文件）。使用反射加载到内存都可以产生Class对象，字节码对象)。比如List<String> 返回的是List.class
+        Class<List> listClass = List.class;
+ParameterizedType的rawType是泛型的原始类型（未参数化的类型）如List
+                                  ActualTypeArguments 是泛型参数的实际类型数组。如List<String> 返回String。也就是括号里面的类型
+                                 getOwnerType() 这个用的少，返回的是持有者的类型 Map.Entry<String, Integer> 的所有者类型是 Map.class，常用语嵌套泛型。
+public class A implements Comparable<B> { @Override public int compareTo(B b) { // 比较 A 和 B 的逻辑 } }Compareble接口理论上能在泛型实现类型写别的类。但是TreeNode的比较限制死了泛型里面实际类型必须和它本身的类相同。也就是说同类比较。当然后面实际比较时也会去判断同类才会去做比较。
+
+写点注释
+```java
+    static int compareComparables(Class<?> kc, Object k, Object x) {
+        return (x == null || x.getClass() != kc ? 0 ://这里如果x是null就不比了。但是我觉得正常来说key不会是null，因为putval时对key value都做了限制，如果是null就抛出空指针异常。另外这里如果类不相同就不比了。
+                ((Comparable)k).compareTo(x));//调用compareTo进行比较。
+    }
+```
+
+下面对强制比较的代码做点注释
+```java
+        /**
+         * Tie-breaking utility for ordering insertions when equal
+         * hashCodes and non-comparable. We don't require a total
+         * order, just a consistent insertion rule to maintain
+         * equivalence across rebalancings. Tie-breaking further than
+         * necessary simplifies testing a bit.
+         */
+        static int tieBreakOrder(Object a, Object b) {
+            int d;
+            if (a == null || b == null ||
+                (d = a.getClass().getName().
+                 compareTo(b.getClass().getName())) == 0)//为null的情况，或者比较类的名字返回相等。进入强制比较。
+                d = (System.identityHashCode(a) <= System.identityHashCode(b) ?
+                     -1 : 1);//identityHashCode 是JVM原生对对象的hashcode。重写在这里无效。根据JVM实际情况算法可能不同，有时是基于内存地址进行运算的。
+            return d;
+        }
+
+```
+
+下面对insertbalance做点注释
+
+```java
+        static <K,V> TreeNode<K,V> balanceInsertion(TreeNode<K,V> root,
+                                                    TreeNode<K,V> x) {
+            x.red = true;
+            for (TreeNode<K,V> xp, xpp, xppl, xppr;;) {
+                if ((xp = x.parent) == null) {
+                    x.red = false;
+                    return x;//x是根节点
+                }
+                else if (!xp.red || (xpp = xp.parent) == null)
+                    return root;//如果父节点是黑的或者在根节点下插入了x,也不需要balance。直接返回。这里有点疑问。既然根节点永远是黑的，为何这里还要判断一下是在根节点下插入直接返回呢。
+                if (xp == (xppl = xpp.left)) {//如果爷爷的左节点是父亲
+                    if ((xppr = xpp.right) != null && xppr.red) {//如果叔叔非空，且叔叔红
+                        xppr.red = false;//叔叔变成黑色
+                        xp.red = false;//父亲从红色变成黑色(父亲如果一开始是黑色那么已经在上面返回了)
+                        xpp.red = true;//把爷爷变成红色，相当于叔叔的红色给了爷爷。
+                        x = xpp;//x跳转为爷爷。就是说把问题变成了爷爷现在是插入点。
+                    }
+                    else {
+                        if (x == xp.right) {//叔叔空的，或者叔叔是黑色的。而且x是右节点
+                            root = rotateLeft(root, x = xp);//左旋。这种就是折返的情况。即左-右结构。这种情况要先把父子捋顺，把左右通过左旋，变成左-左。为后续右旋根创造条件。
+                            xpp = (xp = x.parent) == null ? null : xp.parent;//上一行已经把关注节点从x变成了xp。由于左旋后原先的xp变成了子节点。所以这里的x.parent实际上还是原来的x。xp等于x。说起来有点绕。但是达成的效果是，左旋之后。从图上看爷爷 父亲 孩子，分别是xpp xp x。
+                        }
+                        if (xp != null) {//叔叔红的处理过了，叔叔黑但是左-右处理过了。现在就是左-左了。该右旋了。没有左旋就是左-左，和原先就是左-左，由于上一个if的处理。在这里达成了统一。所以这里要做的就是右旋。
+                            xp.red = false;//将父红设置为黑
+                            if (xpp != null) {
+                                xpp.red = true;//爷爷变成红的
+                                root = rotateRight(root, xpp);//右旋。
+                            }//这里简单分析一下。在上一个if的情况中，这里的xp是插入的那个节点。它的红色最终由爷爷承担。但是并不能简单的把这个红和爷爷的黑互换。因为这样会导致左侧黑高大于右侧黑高。所以要结合右旋与换色同时操作。这里我推测rotateRight只负责了右旋，就是说我先把颜色标记好了。然后直接旋转就行了。旋转后就是符合条件，完美结果了。确认了一下右旋代码，基本与设想一致。除了根节点的情况置了下红。无其他修改颜色。
+                        }
+                    }
+                }
+                else {
+                    if (xppl != null && xppl.red) {
+                        xppl.red = false;
+                        xp.red = false;
+                        xpp.red = true;
+                        x = xpp;
+                    }
+                    else {
+                        if (x == xp.left) {
+                            root = rotateRight(root, x = xp);
+                            xpp = (xp = x.parent) == null ? null : xp.parent;
+                        }
+                        if (xp != null) {
+                            xp.red = false;
+                            if (xpp != null) {
+                                xpp.red = true;
+                                root = rotateLeft(root, xpp);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+```
+
+```java
+        static <K,V> TreeNode<K,V> rotateRight(TreeNode<K,V> root,
+                                               TreeNode<K,V> p) {
+            TreeNode<K,V> l, pp, lr;
+            if (p != null && (l = p.left) != null) {//右旋的时候，是要求左子不能为空的，当然自己也不能为空
+                if ((lr = p.left = l.right) != null)//这里是把左子的右孩子，给了爷爷的左节点
+                    lr.parent = p;
+                if ((pp = l.parent = p.parent) == null)//这里是说左子旋上去之后，变成了根节点，加置一下黑色。
+                    (root = l).red = false;
+                else if (pp.right == p)//如果原先爷爷有父亲，这里要把这个大祖先指向爷爷的指针指向爷爷原先的左子。整体上是爷爷的左子替换了爷爷原先的位置。而爷爷去了左子的右子的位置
+                    pp.right = l;
+                else
+                    pp.left = l;//这里也一样，处理大祖先左节点的情况
+                l.right = p;//剩余的一些指针维护，爷爷左子的右指针指向原先的爷爷
+                p.parent = l;//原先爷爷的parent维护成左子。
+            }
+            return root;//返回最终的root。root在这个方法中可能发生修改。如果原先爷爷是根节点。那么根节点就会发生变更，在上面的注释也有说到。总之要返回最终真实的根节点。
+        }
+```
