@@ -505,27 +505,27 @@ public class A implements Comparable<B> { @Override public int compareTo(B b) { 
                             if (xpp != null) {
                                 xpp.red = true;//爷爷变成红的
                                 root = rotateRight(root, xpp);//右旋。
-                            }//这里简单分析一下。在上一个if的情况中，这里的xp是插入的那个节点。它的红色最终由爷爷承担。但是并不能简单的把这个红和爷爷的黑互换。因为这样会导致左侧黑高大于右侧黑高。所以要结合右旋与换色同时操作。这里我推测rotateRight只负责了右旋，就是说我先把颜色标记好了。然后直接旋转就行了。旋转后就是符合条件，完美结果了。确认了一下右旋代码，基本与设想一致。除了根节点的情况置了下红。无其他修改颜色。
+                            }//这里简单分析一下。在上一个if的情况中，这里的xp是插入的那个节点。它的红色最终由爷爷承担。但是并不能简单的把这个红和爷爷的黑互换。因为这样会导致左侧黑高大于右侧黑高。所以要结合右旋与换色同时操作。这里我推测rotateRight只负责了右旋，就是说我先把颜色标记好了。然后直接旋转就行了。旋转后就是符合条件，完美结果了。确认了一下右旋代码，基本与设想一致。除了根节点的情况置了下红。无其他修改颜色。4,10加注分析。右旋后，右侧的爷爷红的，右黑叔叔。父是黑的。所以右侧黑高为2。原先右侧就是2。左侧原先就黑高为1。现在左边也依然是红的。没有问题。
                         }
                     }
                 }
-                else {
-                    if (xppl != null && xppl.red) {
-                        xppl.red = false;
-                        xp.red = false;
-                        xpp.red = true;
-                        x = xpp;
+                else {//父亲是爷爷的右子节点
+                    if (xppl != null && xppl.red) {//如果爷爷有左子，并且叔叔是红的
+                        xppl.red = false;//叔叔的情况，把叔叔变黑，父亲变黑，爷爷变红。相当于递归的红升。这样两侧高度也ok。小总结，当叔叔红，则将爸叔变黑而红爷爷。这样高度不变也。
+                        xp.red = false;//爸爸变黑
+                        xpp.red = true;//爷爷变红
+                        x = xpp;//当前节点切换为爷爷。以爷爷的视角重新处理这个问题。因为插入是从最底部插的，所以递归的向上解决没有毛病。
                     }
-                    else {
-                        if (x == xp.left) {
-                            root = rotateRight(root, x = xp);
-                            xpp = (xp = x.parent) == null ? null : xp.parent;
+                    else {//else就是说爸爸红，但是叔叔不是红的，或者叔叔是null。没法加黑左侧。要进行旋。比如右-右的情况，需要左旋，让xp变成新的xpp并且为黑，不改变两侧黑高（叔叔是黑的，那么左侧黑高为2，爸爸红，说明右侧黑高为1）。左边是红色的爷爷和黑色的叔叔。右边是红儿子。这样将爷爷的位置变为黑色。整个问题就在这里解决了。
+                        if (x == xp.left) {//如果是右-左型，先右旋捋顺。
+                            root = rotateRight(root, x = xp);//关注节点切为xp
+                            xpp = (xp = x.parent) == null ? null : xp.parent;//xp变成新的xp。位置还是那个位置。xpp还是爷爷
                         }
-                        if (xp != null) {
-                            xp.red = false;
-                            if (xpp != null) {
-                                xpp.red = true;
-                                root = rotateLeft(root, xpp);
+                        if (xp != null) {//爸爸不是null。要左旋了
+                            xp.red = false;//爸爸之前是红的，后来爸爸去了爷爷的位置。变黑了
+                            if (xpp != null) {//爷爷不空
+                                xpp.red = true;//爷爷去左下。变红。这样左侧黑高仍然为2。
+                                root = rotateLeft(root, xpp);//左旋之后，右侧黑高仍然为1。与初始相同
                             }
                         }
                     }
@@ -541,7 +541,7 @@ public class A implements Comparable<B> { @Override public int compareTo(B b) { 
             if (p != null && (l = p.left) != null) {//右旋的时候，是要求左子不能为空的，当然自己也不能为空
                 if ((lr = p.left = l.right) != null)//这里是把左子的右孩子，给了爷爷的左节点
                     lr.parent = p;
-                if ((pp = l.parent = p.parent) == null)//这里是说左子旋上去之后，变成了根节点，加置一下黑色。
+                if ((pp = l.parent = p.parent) == null)//这里是说左子旋上去之后，变成了根节点，加置一下黑色。4,10日灵光一闪，补充注释，这里是因为只有在根节点处出现了红升，才能最终确认黑高+1。叔叔红的情况，红升。而叔叔黑的情况，通过旋将问题内部消化，爷爷节点本来就黑，就不会升。所以旋的代码有可能增高（爷爷红也就是叔叔红的情况）。也有可能不增高（比如叔叔黑的情况）。
                     (root = l).red = false;
                 else if (pp.right == p)//如果原先爷爷有父亲，这里要把这个大祖先指向爷爷的指针指向爷爷原先的左子。整体上是爷爷的左子替换了爷爷原先的位置。而爷爷去了左子的右子的位置
                     pp.right = l;
@@ -552,4 +552,624 @@ public class A implements Comparable<B> { @Override public int compareTo(B b) { 
             }
             return root;//返回最终的root。root在这个方法中可能发生修改。如果原先爷爷是根节点。那么根节点就会发生变更，在上面的注释也有说到。总之要返回最终真实的根节点。
         }
+```
+
+看完balance插入，顺便注解一下balance删除。
+```java
+
+        static <K,V> TreeNode<K,V> balanceDeletion(TreeNode<K,V> root,
+                                                   TreeNode<K,V> x) {//处理双黑节点x
+            for (TreeNode<K,V> xp, xpl, xpr;;) {//父亲，父亲的左，父右。死循环
+                if (x == null || x == root)//如果关注节点已经上升到root，那么root的双黑自动脱掉一层。达成黑高减1。这里对插入对比分析总结。插入的时候，希望叔叔是黑色的，因为叔叔黑，就能不上升问题，说明叔叔那边还有空间安置红，最终通过旋，将一个红色旋到叔叔那边。插入的时候遇到双红，则自动脱双红而升红。上面也讲了升红的逻辑，同时把父叔置黑。（2025-4-11补充注解，不论插入还是删除，始终是红色往黑色方向旋）
+                //而删除希望叔叔那边有红。首先是叔叔红。这时候需要从叔叔那边往关注点旋。以关注点在左为例。若叔叔红。则叔叔，爷爷互换颜色。爷爷旋到了左边。而目标与叔的左重新进入循环。此时叔的左变成了叔。即，叔红不能一下子解决问题。但是即使是叔的左为黑，最终问题也是能在爷爷这里停下来。如果叔子左子继续为红。问题有可能在更低级的地方就解决。
+                //接下来是叔黑。可以提取双黑而升黑。
+                //接下来是叔的子红。依然要先捋顺再旋。需要注意的是，在捋顺时，旋元素，但颜色不能旋。这里和插入的臂旋有所区别。因为插入的时候的臂旋是两个红色。不牵扯颜色。所以删除的时候捋顺旋的时候，要小心旋素不旋色。捋顺了之后再左大旋。利用了右侧的红，变成了黑。顶掉了叔的黑。而叔叔和爷爷依次旋。最后把爷爷旋过去了。此时爷爷旋过去，吃了x的一层黑。X与叔的左子变成爷爷的子孙稳定了下来。
+				//总结下，如果叔叔那边有红。一定可以不升黑。
+				//如果叔叔那边全黑。直接升黑。
+				//如果叔叔红。则左旋。以叔的左子重构问题。使问题有可能在更低处解决。
+				//如果叔叔的子红，则先臂旋，臂旋时注意旋素不旋色。然后再大旋。此时爷爷下来吃一层黑，问题注定解决。最终x与叔的左子同为爷爷的孩子最终稳定下来。
+                    return root;//遗留一个问题 ，何时x为null
+                else if ((xp = x.parent) == null) {//这里是说x没有parent,依然是根节点。
+                    x.red = false;//处理到顶端，置下黑。疑问，balanceDeletion为什么要对关注点置黑。
+                    return x;
+                }
+                else if (x.red) {//如果删除的是一个红色节点。无需balance。返回
+                    x.red = false;
+                    return root;
+                }
+                else if ((xpl = xp.left) == x) {//如果关注点x（双黑父亲）是爷爷的左孩子。
+                    if ((xpr = xp.right) != null && xpr.red) {//如果叔叔是右节点，并且叔叔红
+                        xpr.red = false;//大旋，把叔叔变黑，因为叔叔红说明爷爷黑
+                        xp.red = true;//大旋下来的爷爷标记为红色。
+                        root = rotateLeft(root, xp);//左旋xp 左旋爷爷
+                        xpr = (xp = x.parent) == null ? null : xp.right;//xp重新定义一下。因为叔叔的左子过来了，所以把叔叔左子记录为xpr。
+                    }
+                    if (xpr == null)//叔叔红时，问题向下递归。如果叔叔左子是null。问题没解决。x=xp,问题恢复原来位置。再递归。比如说叔叔红，但是叔叔是叶子节点。叔叔的左子过来是个null。没法解决问题。此时把问题回归到之前的爷爷。也就是x。此时x已经是红色的。按理说这时候应该把x变成黑色，而孩子变成红色。但是疑问是这里看不到对旧x的处理。
+                        x = xp;
+                    else {
+                        TreeNode<K,V> sl = xpr.left, sr = xpr.right;//叔叔左子xpr（实际上这时叔叔左子已经重定义为叔叔）不是null.也就是新的叔叔xpr。
+                        if ((sr == null || !sr.red) &&
+                            (sl == null || !sl.red)) {//这里sr 是新叔叔的右孩子。 如果sr没有或者不是红色 且sl没有或者不是红色。这里就是说新叔叔的孩子都黑的。这里由于原先叔叔是红的，所以这个新叔叔（原来的叔叔左子）不可能是红的。这样就是说整个新叔叔一家全黑。
+                            xpr.red = true;//全黑的情况，直接脱一层黑。升黑。但是这里为何没有把红色的爷爷xp置黑从而解决问题？这里再看了一下代码，下次循环时，由于关注点爷爷是红色的。就把爷爷置黑，直接返回了。没有问题。
+                            x = xp;//问题关注点给到了爷爷。
+                        }
+                        else {
+                            if (sr == null || !sr.red) {//这里是新叔叔一家子有红色的情况,首先新叔叔一定是黑的。红色的情况已经处理了。如果新叔叔的右孩子解决不了问题
+                                if (sl != null)//那么自然新叔叔的左孩子要解决问题。有个疑问是这里不可能为null了把。
+                                    sl.red = false;//把新叔叔的左孩子变黑
+                                xpr.red = true;//叔叔变红。
+                                root = rotateRight(root, xpr);//捋顺旋，旋素不旋色。叔叔处依然黑。
+                                xpr = (xp = x.parent) == null ?//xpr重新更新了一下。毕竟旋转过了，新的xpr变成了原先xpr的左子
+                                    null : xp.right;
+                            }
+                            if (xpr != null) {//如果捋顺后的叔叔不空，接下来该左旋了。
+                                xpr.red = (xp == null) ? false : xp.red;//把叔叔的颜色，换成了爷爷的颜色。这里的场景叔叔是黑色，而爷爷此时是红色。左旋时，叔叔要顶爷爷的颜色与位置。但是疑问这里既然爷爷必然是红色，何不直接换成红色。
+                                if ((sr = xpr.right) != null)//如果叔叔的右孩子不空。
+                                    sr.red = false;//叔叔的右孩子变黑。这个是左旋正常操作。
+                            }
+                            if (xp != null) {//爷爷不是空的
+                                xp.red = false;//爷爷变黑。这里爷爷旋下来是要吃一层黑来解决问题的。叔黑而子红的情况，问题会直接解决掉。
+                                root = rotateLeft(root, xp);//左旋
+                            }
+                            x = root;//叔黑，但sl红。问题直接解决。
+                        }
+                    }//这里需要更正一下原来的观点。只要叔叔一侧有红。问题都是会立即解决。1.首先叔叔红，说明叔叔两子黑。此时左旋后新叔叔黑而爷爷红，问题立即解决。2.假如叔叔黑，孩子没有红。把叔叔变成红色了。升黑。此时如果叔叔是红色的情况，问题能迅速解决，但是叔叔是黑色的话，问题有可能出现递归。所以问题的关键是看xp的颜色。3.假如叔叔黑，但是孩子有红。就是捋顺+左旋。爷爷吃黑解决问题。
+                }
+                else { // symmetric
+                    if (xpl != null && xpl.red) {//镜像分支，x是xpr。如果叔叔是红色。
+                        xpl.red = false;//把叔叔改成黑色
+                        xp.red = true;//爷爷变红
+                        root = rotateRight(root, xp);//右旋。叔的右子与x变成兄弟。
+                        xpl = (xp = x.parent) == null ? null : xp.left;//xpl重新刷新一下，也就是原先的树的右子。这里原先叔叔红色，那么这个右子必然是黑色。而爷爷是红色。所以将来会很快得到解决。
+                    }
+                    if (xpl == null)//很难理解这里叔叔为什么是null。毕竟x面临双黑，所以叔叔家不应该这么缺人。
+                        x = xp;
+                    else {
+                        TreeNode<K,V> sl = xpl.left, sr = xpl.right;//处理了叔叔红色，到这里叔叔应该是黑色了。xpl是黑色。这里给叔叔的左右分别起名sl，sr.
+                        if ((sl == null || !sl.red) &&
+                            (sr == null || !sr.red)) {//如果叔叔没子，或者叔叔孩子时黑色。总之这里是说叔叔全家都是黑色。
+                            xpl.red = true;//这里要升黑了。
+                            x = xp;//问题转嫁给爷爷
+                        }
+                        else {
+                            if (sl == null || !sl.red) {//sl不是红。那么sr就是红
+                                if (sr != null)
+                                    sr.red = false;//如果sr不空，把右孩子变黑。这里是说要做捋顺旋，旋素不旋色。叔叔原来黑，所以保住这个位置的颜色。这里有孩子原先是红的。所以右孩子的右孩子是黑的。另外如果一开始叔叔这俩孩子都是红的也有可能。所以将来和x做兄弟的既有可能是红的，也有可能是黑的。不过这没关系。本身这个孩子的黑高就是一个黑加上一个爷爷色。变到另外一边之后仍然是一黑加上原先爷爷色。整体黑高没变。
+                                xpl.red = true;//叔叔颜色先给你放好。将来你要下去当红色。
+                                root = rotateLeft(root, xpl);//旋元素
+                                xpl = (xp = x.parent) == null ?//重新定义一下叔叔。现在是黑叔叔了。但是它有一个红左子
+                                    null : xp.left;
+                            }
+                            if (xpl != null) {//红色左子
+                                xpl.red = (xp == null) ? false : xp.red;//这里给叔叔吃了爷爷的颜色
+                                if ((sl = xpl.left) != null)
+                                    sl.red = false;//大右旋，这个孩子要吃叔叔的颜色
+                            }
+                            if (xp != null) {
+                                xp.red = false;//这里爷爷本身应该吃sl的红色。但是由于还要吃一层双黑。所以直接变黑
+                                root = rotateRight(root, xp);//大右旋
+                            }
+                            x = root;//将x定位到root。方便退出方法。因为这里处理的都是叔家有红的情况。
+                        }
+                    }
+                }
+            }
+        }
+
+```
+
+接下来注解一下删除方法
+```java
+        /**
+         * Removes the given node, that must be present before this
+         * call.  This is messier than typical red-black deletion code
+         * because we cannot swap the contents of an interior node
+         * with a leaf successor that is pinned by "next" pointers
+         * that are accessible independently of lock. So instead we
+         * swap the tree linkages.
+         *
+         * @return true if now too small, so should be untreeified
+         */
+         //关于这段注释，我理解是concurentHashMap可能觉得balanceDeletion时间比较长，不希望一边调整树时，一边调整节点的next。可以在一开始就把next调好。或者balance完成之后再调整next指针。由于旋转等操作都是不改变顺序的。所以要调整的也只涉及跳过被删节点。如果是swap值，可能在外部访问链表时出现意外的结果。比如先swap，再调整next。可能导致调序。如果先next调整，再swap，可能导致打印出了删除的节点但是没打印出该有的节点。但是如果通过指针调整的方式。我可以慢慢调整balance。至于next指针何时处理，这个看代码。总之只要前节点跳过一个节点进行指向后节点就能实现。不会出现打印值超出预期的情况（乱序、少了后继节点等）。
+        final boolean removeTreeNode(TreeNode<K,V> p) {//删除p节点
+            TreeNode<K,V> next = (TreeNode<K,V>)p.next;//next节点
+            TreeNode<K,V> pred = p.prev;  // unlink traversal pointers
+            //prev是TreeNode特有的。 next是Node都有
+            TreeNode<K,V> r, rl;
+            if (pred == null)
+                first = next;//如果没有前续节点。将首点设为next。TreeBin继承自Node。看起来就像是一颗树的包装。里面有root，first,还有一些并发控制信息。类似于一个头结点。本身不含数据。但是有next。root。另外还提供并发控制。
+            else
+                pred.next = next;//开局就完成了next的跳过
+            if (next != null)
+                next.prev = pred;//维护完链表的Next再维护TreeNode的prev
+            if (first == null) {//如果first是空
+                root = null;//树空了
+                return true;
+            }
+            if ((r = root) == null || r.right == null || // too small
+                (rl = r.left) == null || rl.left == null)//返回true后会untreeify。
+                return true;
+            lockRoot();//这里保证同一时刻只能有一个写线程在操作这个桶。写的时候也禁止使用树型遍历方式访问这个桶。当然可以通过next指针以链表方式读。
+            try {
+                TreeNode<K,V> replacement;
+                TreeNode<K,V> pl = p.left;
+                TreeNode<K,V> pr = p.right;
+                if (pl != null && pr != null) {
+                    TreeNode<K,V> s = pr, sl;
+                    while ((sl = s.left) != null) // find successor
+                        s = sl;//右子树中递归的向左寻找。就是找右子树中最左的。如果找不到，s就是没有左子树的那个节点。
+                    boolean c = s.red; s.red = p.red; p.red = c; // swap colors
+                    TreeNode<K,V> sr = s.right;//后续是把后继节点挪到p处。
+                    TreeNode<K,V> pp = p.parent;
+                    if (s == pr) { // p was s's direct parent
+                        p.parent = s;//如果s是p的右节点，就把p与s调换。pl,pr后续会处理。这里s最多还有一个右节点。
+                        s.right = p;
+                    }
+                    else {
+                        TreeNode<K,V> sp = s.parent;
+                        if ((p.parent = sp) != null) {//将p的parent重置为s的parent。如果不空，也就是说s原来有父母
+                            if (s == sp.left)//后续就是将p放到s原来父母的位置
+                                sp.left = p;
+                            else
+                                sp.right = p;
+                        }
+                        if ((s.right = pr) != null)//将p的右子给s的右子。
+                            pr.parent = s;
+                    }
+                    p.left = null;//p的左节点置空后续也会把pl给到sr。前面的大判断说明p有右子树。所以p的后继节点必然是没有左子树。直接把p.left置空。而如果s只有一个右子。那么这个右子将来会保留给p。并且可以直接让这个右子替换p，不需要balance。
+                    if ((p.right = sr) != null)//这里是把sr给到pr。
+                        sr.parent = p;
+                    if ((s.left = pl) != null)//这里是把pl给到sl
+                        pl.parent = s;
+                    if ((s.parent = pp) == null)//这里是说如果被删的p原先是root。那么s成为新的root
+                        r = s;
+                    else if (p == pp.left)//这里的两个判断是让s成为原先pp的儿子
+                        pp.left = s;
+                    else
+                        pp.right = s;
+                    if (sr != null)//如果sr不为空。前面也提到了sr是个红色节点。所以rep标记sr。个人觉得这里可以直接处理。
+                        replacement = sr;
+                    else
+                        replacement = p;//如果s原先就是个子节点。那么rep标记p。此时rep的颜色其实还是s原来的颜色。因为节点是先换了颜色，又换了位置。所以这里如果是红色，直接就可以删除p。如果是黑色，要balance。
+                }
+                else if (pl != null)//这里是说pr是null，那么后继就是pp。此时rep定向到pl。实际pl必然为红色。后续就是需要让pl顶替p就可以了。
+                    replacement = pl;
+                else if (pr != null)//这里是没有左子，但是有右子。一样的。后续让pr替换p
+                    replacement = pr;
+                else//如果p本身就是个叶子节点。那么rep是p
+                    replacement = p;
+                if (replacement != p) {//如果rep不是p。这里综合考虑了一开始p就缺孩子，以及p位移到后继节点之后缺孩子的情况
+                    TreeNode<K,V> pp = replacement.parent = p.parent;//把p的parent给了rep。这个复合预期。要干掉p
+                    if (pp == null)
+                        r = replacement;//这里是说原先p是根节点。那现在rep是根节点了
+                    else if (p == pp.left)//这里两个判断是维护一下原先的pp对孩子的关系。
+                        pp.left = replacement;
+                    else
+                        pp.right = replacement;
+                    p.left = p.right = p.parent = null;//这下p彻底废了。相关变量都置了空。如果没有Node引用p。方法结束后p会被回收。
+                }
+
+                root = (p.red) ? r : balanceDeletion(r, replacement);//对于rep是p的情况。如果s一开始是黑节点。这里要处理双黑上升问题。可能最终会导致黑高-1。
+
+                if (p == replacement) {  // detach pointers //官方给的注解很好，脱卸指针。毕竟p已经废了。
+                    TreeNode<K,V> pp;
+                    if ((pp = p.parent) != null) {//如果有父母
+                        if (p == pp.left)//这两个判断是让父母忘记p。
+                            pp.left = null;
+                        else if (p == pp.right)
+                            pp.right = null;
+                        p.parent = null;//这个是让p忘记父母。
+                    }
+                }
+            } finally {
+                unlockRoot();//无论成败，要解锁。
+            }
+            assert checkInvariants(root);
+            return false;//删除时是否退化。删除时，实际当rl没有左孩子时，才会退化。即没有左左孙子才退化。自举例子：如果一个红黑树只有四个node，它也可能是有左左孙子的。
+        }
+```
+
+```java
+        /**
+         * Acquires write lock for tree restructuring.
+         */
+        private final void lockRoot() {
+            if (!U.compareAndSetInt(this, LOCKSTATE, 0, WRITER))//writer写。waiter等写。reader以4为增量代表有多少线程在读。如果有写锁。读线程需退化为线性遍历链表。
+                contendedLock(); // offload to separate method
+                //将竞争锁分担/卸到一个独立的方法。实现了从无锁CAS到轻量级park阻塞锁的升级。
+        }
+```
+
+```java
+        /**
+         * Possibly blocks awaiting root lock.
+         *///注释的意思是说可能会阻塞
+        private final void contendedLock() {
+            Thread current = Thread.currentThread(), w;//定义了current,以及一个w线程变量。
+            for (int s;;) {//自旋
+                if (((s = lockState) & ~WAITER) == 0) {//
+                    if (U.compareAndSetInt(this, LOCKSTATE, s, WRITER)) {//如果没读/写锁，设置一个写锁,这里~指按位取反。意思是waiter位没关系。第二位代表有人在等写锁，不关心这个。只关心有没有锁，无论是读还是写。
+                        if (waiter == current)//如果我自己在等，把waiter置空
+                            U.compareAndSetReference(this, WAITERTHREAD, current, null);
+                        return;//拿到锁就返回
+                    }
+                }
+                else if ((s & WAITER) == 0)//现在没人在等。那设置成有人等写锁，继续自旋。
+                    U.compareAndSetInt(this, LOCKSTATE, s, s | WAITER);//加个waiter位，也就是右侧数第二位。
+                else if ((w = waiter) == null)//如果有人等，但是waiter是null,把waiter设置成自己。这里发现，只有第二次循环的时候才会把自己安排到waiter。第一次只是标记了一下有人在等。
+                    U.compareAndSetReference(this, WAITERTHREAD, null, current);//设置了waiter线程
+                else if (w == current)//第三次的时候，把自己park。这里意思是其他线程一直自旋，只能park一个？
+                    LockSupport.park(this);
+            }
+        }
+
+```
+
+小总结：在put方法中，分fh>0 和 f instanceof TreeBin。 而在get中， 其中如果是TreeBin，它的find如下。每个节点都要做一次循环，看看是否有锁竞争。如果有锁竞争，下个节点继续采用退化的链表法寻找。如果找着找着发现锁竞争解除了。那么切换为树型查找。找到后唤醒写锁竞争失败的一个线程。我自己分析下来，如果只有多个线程竞争写锁，而没有读请求。会存在一个线程一直被锁着。直到读请求来了，读完之后才唤醒被阻塞的写。而一大批写请求中，只有第二名这个倒霉蛋被锁住了。其他写线程和可能存在的读线程是在公平的竞争这个锁。考虑另外一种情况，如果读请求特别多，而写只有一两个。此时，在刚刚的写占锁代码中，写进程会维护一个waiter位。这个位会导致后续的读请求无法竞争锁。所以这个写进程会优先级很高的执行完毕。不会产生饥饿。但是这依然无法解释，安排一个写线程当倒霉蛋在这里睡觉的意义。当写线程unlock后，所有的写/读公平竞争一次。但是一旦写竞争不到，写就会维护一个waiter位。让下一个请求必然是写。这样似乎是在读请求特别多时，可以让读写交替执行。但是当写请求特别多时，无法保障读请求能够及时执行。
+遗留疑问1：这个倒霉蛋在这里睡觉的意义？遗留问题2：park时明明park的是this（TreeBin）,为何unpark时unpark TreeBin的 waiter?
+查询元宝：1.只有第一个竞争失败会被注册为waiter并挂起，既减少了CPU空转，又保留了锁竞争的机会。自己觉得问题一回答有点牵强。2.第二个问题很明确，blocker仅仅用于调试，可以使用jstack看到线程的parkBlocker字段上的信息。另外park也支持无参方法。
+
+2025-4-12晚，了解了读的代码后在此补充说明。当大批量读与大批量写同时并发时，由于waiter位的存在，并发读线程只能--，而不能++。直到最后一个并发的读线程结束之后，唤醒被阻塞的一个写线程，然后后续一定是写线程抢占到资源。而写线程结束后将state置0。后续是读与写公平竞争。也就是说读请求可能因为写请求太多而饥饿（但是这种饥饿并不需要等所有的写结束，只是在与写公平竞争时竞争失败），而写请求绝对不会因读太多饥饿。
+
+```java
+        /**
+         * Returns matching node or null if none. Tries to search
+         * using tree comparisons from root, but continues linear
+         * search when lock not available.
+         */
+        final Node<K,V> find(int h, Object k) {//返回Node.输入是hash和key。
+            if (k != null) {//如果输入的k不是null。。。，是null直接返回null
+                for (Node<K,V> e = first; e != null; ) {//这里如果first是null也返回null。死循环
+                    int s; K ek;
+                    if (((s = lockState) & (WAITER|WRITER)) != 0) {//这里是说写以及等待写的情况，读树退化成读链表
+                    //写结束时，会把state置0。也就是说读抢写，无脑抢。但是后面的地方，读结束的时候，只是把读线程数--。会导致所有的写线程进行阻塞（只有一个会阻塞，怀疑是不是单纯为了方便调试？可以看到有写线程block）或者自旋。
+                        if (e.hash == h &&//如果hash值匹配
+                            ((ek = e.key) == k || (ek != null && k.equals(ek))))//并且key也匹配
+                            return e;
+                        e = e.next;//否则继续遍历下一个节点
+                    }
+                    else if (U.compareAndSetInt(this, LOCKSTATE, s,
+                                                 s + READER)) {//每次遍历节点的时候，都会判断是否有写线程。如果没有，那么读线程数++，以READER=4 为增量。
+                        TreeNode<K,V> r, p;
+                        try {
+                            p = ((r = root) == null ? null :
+                                 r.findTreeNode(h, k, null));//直接调了TreeNode的findTreeNode方法。TreeBin维护了TreeNode类型的root。所以可以用root。findTreenode.直接调二分法查找。这里看之前普通遍历的浪费了。
+                        } finally {
+                            Thread w;
+                            if (U.getAndAddInt(this, LOCKSTATE, -READER) ==//关系运算符优先级高于逻辑运算符
+                                (READER|WAITER) && (w = waiter) != null)//这里是lockstate-READER. 减少一个读线程。getAndAdd，所以返回的数据是旧的。这里如果去掉一个读之前就是最后一个了，说明读都去掉了。此时是说没有人在读了，旧唤醒被阻塞的写线程。所以说，当写并发出现时，会随机block一个线程。直到下次读结束，才会把那个倒霉蛋唤醒。读并发也不会完全抢占写的机会。举个例子，当大量读写请求来临时，假设读请求先中，此时在读的过程中，写线程由于抢不到锁，会产生一个waiter线程，以及会置位。这样下次如果读线程又想抢，就会发现WAITER位不是0。读线程退化。当第一个读线程结束后，会unpark被阻塞的那个写线程，此时下一个能得到锁的要看写线程们的运气。如果恰好是waiter抢到了，会把waiter置null。但是置null后，只要还有写线程竞争不到，就会又产生一个waiter。也就是说waiter不代表下一个写线程就是waiter,但是它能证明有至少一个写线程在竞争。也就是说读完成后，必然会让写进行作业。写完成后，把state置0。这样读写请求会公平的去竞争机会。而reader++也不是没有意义。如果一开始只有读，没有写，这样可以让读并发起来。一旦出现写，waiter位就像一个屏障。禁止后续的读请求继续运行。等到之前攒好的reader们运行结束，下个会随机取一个写线程。
+                                LockSupport.unpark(w);
+                        }
+                        return p;//返回找到的数据
+                    }
+                }
+            }
+            return null;
+        }
+```
+
+checkInvariants
+这个就像是ConcurretHashMap写的ut一样。每次对树完成变更都要检查一下是否符合红黑树的结构。Invariants,翻译为不变量。我自己引申为不变的真理，即满足红黑树结构的一些条件。
+
+
+关于树的底层代码看的差不多了，这里我们继续看transfer代码中关于树节点的处理逻辑。依然采用加注解的方式。
+```java
+                        else if (f instanceof TreeBin) {
+                            TreeBin<K,V> t = (TreeBin<K,V>)f;//定义了几个变量，比如桶上的树TreeBin头结点，以及扩容拆分后的链表的头尾指针等。
+                            TreeNode<K,V> lo = null, loTail = null;
+                            TreeNode<K,V> hi = null, hiTail = null;
+                            int lc = 0, hc = 0;//计数
+                            for (Node<K,V> e = t.first; e != null; e = e.next) {//竟然不是死循环，一股清流
+                                int h = e.hash;
+                                TreeNode<K,V> p = new TreeNode<K,V>
+                                    (h, e.key, e.val, null, null);//每个节点，重新构建一个TreeNode。方便初始化新的树
+                                if ((h & n) == 0) {//为0就是相对位置不变的情况
+                                    if ((p.prev = loTail) == null)//如果还没有第一个节点。
+                                        lo = p;//头指针指向p
+                                    else
+                                        loTail.next = p; //否则就要更新当前尾巴的next
+                                    loTail = p;//更新尾巴
+                                    ++lc;//更新计数
+                                }
+                                else {
+                                    if ((p.prev = hiTail) == null)//high链表没元素的情况
+                                        hi = p;//头指针
+                                    else
+                                        hiTail.next = p;//最后一个元素的next指向p
+                                    hiTail = p;//尾巴更新
+                                    ++hc;//计数增加
+                                }
+                            }
+                            ln = (lc <= UNTREEIFY_THRESHOLD) ? untreeify(lo) :
+                                (hc != 0) ? new TreeBin<K,V>(lo) : t;//是否退化，是否可以沿用之前的树。下面hn类似。
+                            hn = (hc <= UNTREEIFY_THRESHOLD) ? untreeify(hi) :
+                                (lc != 0) ? new TreeBin<K,V>(hi) : t;
+                            setTabAt(nextTab, i, ln);
+                            setTabAt(nextTab, i + n, hn);
+                            setTabAt(tab, i, fwd);//set fwd代表此桶迁移完成。
+                            advance = true;//继续看下一份工作
+                        }
+                        else if (f instanceof ReservationNode)//如果是预留节点抛出异常。
+                            throw new IllegalStateException("Recursive update");
+                    }
+```
+
+在原子操作中，如compute。会放置ReservationNode导致锁桶。这时会扩容失败。咨询了一下元宝，即使我写死循环去compute，最终仍能扩容成功。因为扩容是多线程协作，有记忆性，而且优先级极高。但看起来，起码这个put线程抛异常了。影响还是很恶劣的。这个异常有九处抛出，分别设计put,merge,compute,transfer等核心功能。尝试复现这个bug，但是没有复现成功，可能我对这个问题的理解还不到位。
+
+```java
+            else if ((f = tabAt(tab, i = (n - 1) & h)) == null) {
+                Node<K,V> r = new ReservationNode<K,V>();
+                synchronized (r) {
+                    if (casTabAt(tab, i, null, r)) {
+                        binCount = 1;
+```
+
+经过观察，这段代码只在compute和computeIfAbsent时出现。加锁使用了本线程new出的r。查元宝后说，table是volatile的，保证了table的可见性。这里对r进行synchronized，利用synchronized块结束时的SL屏障，刷新ReservationNode的可见性。两者及时保证这个修改对其他线程可见。
+
+synchronized有happens-before机制。即释放锁时对共享变量的操作，在其他线程获取锁之前。
+实现原理：释放锁时， monitorexit后 先使用LL+LS屏障，保障代码有序性。然后插入SL全能屏障，保障数据对其他CPU的可见性。获得锁monitorenter前插入SS+LS屏障，保障读到的共享变量是最新的。屏障由JVM在编译或运行时自动插入。而monitorenter monitorexit 是synchronized 关键字在字节码中的具体对应的内容。
+
+继续分析putval剩下的代码：
+
+```java
+            else if (onlyIfAbsent // check first node without acquiring lock
+                     && fh == hash
+                     && ((fk = f.key) == key || (fk != null && key.equals(fk)))
+                     && (fv = f.val) != null)
+                return fv;//onlyIfAbsent并且第一个元素就找到了。那么直接返回。
+            else {
+                V oldVal = null;//定义一个旧v指针
+                synchronized (f) {//对f加synchronized锁
+                    if (tabAt(tab, i) == f) {//如果我加到锁之后，f还是f。i是 (n - 1) & hash。否则再旋
+                        if (fh >= 0) {//普通链表访问
+                            binCount = 1;//初始化为1。至少有put的一个。
+                            for (Node<K,V> e = f;; ++binCount) {//每次循环++binCount。对元素记个数
+                                K ek;//定义K指针
+                                if (e.hash == hash &&//这几行判断就是找到了
+                                    ((ek = e.key) == key ||
+                                     (ek != null && key.equals(ek)))) {
+                                    oldVal = e.val;//老值存起来
+                                    if (!onlyIfAbsent)
+                                        e.val = value;//！onlyIfAbsent，把值换掉
+                                    break;//这个计数就记了这个数排第几。
+                                }
+                                Node<K,V> pred = e;
+                                if ((e = e.next) == null) {//找不到会循环。实在找不到在最后添加一个。
+                                    pred.next = new Node<K,V>(hash, key, value);
+                                    break;//只有真的添加元素了的时候，这个BinCount才是实际元素数量。这样也没什么毛病。因为没添加元素，所以一个比较小的假数据也同样不会触发扩容。
+                                }
+                            }
+                        }
+                        else if (f instanceof TreeBin) {
+                            Node<K,V> p;
+                            binCount = 2;//treeBin赋值成2。这个其实是说已经是树了，并不需要再树化了，所以也不需要统计。
+                            if ((p = ((TreeBin<K,V>)f).putTreeVal(hash, key,
+                                                           value)) != null) {//原先有值会返回旧值
+                                oldVal = p.val;
+                                if (!onlyIfAbsent)
+                                    p.val = value;//这个与普通节点处理一样，强制覆盖的场景
+                            }
+                        }
+                        else if (f instanceof ReservationNode)
+                            throw new IllegalStateException("Recursive update");//强调原子操作不能递归的去进行写操作。可能会导致锁冲突。
+                    }
+                }
+                if (binCount != 0) {//如果bincount不是0
+                    if (binCount >= TREEIFY_THRESHOLD)//需要树化
+                        treeifyBin(tab, i);
+                    if (oldVal != null)
+                        return oldVal;//有旧值就返回旧值
+                    break;
+                }
+            }
+        }
+        addCount(1L, binCount);//增加数值。 bincount有3种情况，非树时存在小假数，非树正确数，树情况直接是2假数。
+        return null;
+    }
+
+```
+
+接下来，细看一下putTreeVal代码
+
+```java
+        /**
+         * Finds or adds a node.
+         * @return null if added
+         */
+        final TreeNode<K,V> putTreeVal(int h, K k, V v) {
+            Class<?> kc = null;//k的类
+            boolean searched = false;//hash相同的情况，找没找过。只找一次。
+            for (TreeNode<K,V> p = root;;) {//死循环
+                int dir, ph; K pk;
+                if (p == null) {//这是个空树。那直接建个根节点出来。疑问，会有这么小的树在这吗？
+                    first = root = new TreeNode<K,V>(h, k, v, null, null);
+                    break;
+                }
+                else if ((ph = p.hash) > h)//这个是说根节点比h大，h较小
+                    dir = -1;
+                else if (ph < h)
+                    dir = 1;//h比较大
+                else if ((pk = p.key) == k || (pk != null && k.equals(pk)))
+                    return p;//直接找到了，那就返回。树这个找到了就只负责找。是否改值在调用处处理。
+                else if ((kc == null &&
+                          (kc = comparableClassFor(k)) == null) ||
+                         (dir = compareComparables(kc, k, pk)) == 0) {//简单比较了一下hash，还是0。但是key并不equals
+                    if (!searched) {
+                        TreeNode<K,V> q, ch;
+                        searched = true;//没找过就标记为找过，并且执行找找看的逻辑。
+                        if (((ch = p.left) != null &&//hash值相同的话，找找子节点里面有没有。
+                             (q = ch.findTreeNode(h, k, kc)) != null) ||
+                            ((ch = p.right) != null &&
+                             (q = ch.findTreeNode(h, k, kc)) != null))
+                            return q;
+                    }
+                    dir = tieBreakOrder(k, pk);//走到这里确实没找到。那就赋值一个稳定的强制比较结果。
+                }
+
+                TreeNode<K,V> xp = p;
+                if ((p = (dir <= 0) ? p.left : p.right) == null) {//如果目标位置是null
+                    TreeNode<K,V> x, f = first;//记录f=first并定义一个x指针
+                    first = x = new TreeNode<K,V>(h, k, v, f, xp);//这里的代码意思是Node的next,TreeNode的prev所维护的树中的链表，其元素遍历顺序并不与红黑树元素遍历顺序相同。即使是红黑树，其仍然维护了一套链表结构。而且是头插，顺序与红黑树的元素顺序无关。
+                    if (f != null)
+                        f.prev = x;//
+                    if (dir <= 0)//如果新来的树比较小。把x放在xpl。
+                        xp.left = x;
+                    else
+                        xp.right = x;//否则放在xpr
+                    if (!xp.red)
+                        x.red = true;//如果父节点是黑的。那么直接红色。否则走下面的balance
+                    else {
+                        lockRoot();//类似删除的加锁
+                        try {
+                            root = balanceInsertion(root, x);//balanceInsertion 看过了。而且这里既然调了balance。说明上面的循环一定是递归到了叶节点才开始插入。
+                        } finally {
+                            unlockRoot();
+                        }
+                    }
+                    break;
+                }
+            }
+            assert checkInvariants(root);//检查红黑树
+            return null;
+        }
+
+```
+补充解释一下上面的代码。首先讨论没有hash相同的情况，是一路比较下来。通过死循环+ if ((p = (dir <= 0) ? p.left : p.right) == null)这个判断循环到叶节点结束。如果发现了hash相同，会找找子节点有没有。没有的话，会回来。进入下一层循环。但是下一层循环，如果hash值又相同，不会再次找了。因为之前找不到就是没有了，只需要循环到子节点找个位置就行。searched 变量可以节省不需要的查找工作。
+
+需要注意的是，普通链表是尾插，而红黑树中维护的链表结构是头插。这两块代码（if else分别处理普通链表结构，或者红黑树结构）在同一个同步代码块中。锁是桶中的元素。
+
+接下来讲解一下，addCount,也采用加注释的方式。
+
+```java
+    /**
+     * Adds to count, and if table is too small and not already
+     * resizing, initiates transfer. If already resizing, helps
+     * perform transfer if work is available.  Rechecks occupancy
+     * after a transfer to see if another resize is already needed
+     * because resizings are lagging additions.
+     *
+     * @param x the count to add
+     * @param check if <0, don't check resize, if <= 1 only check if uncontended
+     */
+    private final void addCount(long x, int check) {
+        CounterCell[] cs; long b, s;
+        if ((cs = counterCells) != null ||//countercell是null就要去初始化一下。
+            !U.compareAndSetLong(this, BASECOUNT, b = baseCount, s = b + x)) {//这里是说修改baseCount成功了
+            CounterCell c; long v; int m;
+            boolean uncontended = true;
+            if (cs == null || (m = cs.length - 1) < 0 ||//这里是说countercell是空的情况走最终手段
+                (c = cs[ThreadLocalRandom.getProbe() & m]) == null ||//当前线程整个格子。整不到格子就走最终手段。整到了后面会尝试操作countercell。
+                !(uncontended =
+                  U.compareAndSetLong(c, CELLVALUE, v = c.value, v + x))) {//当前线程操作countercell也失败了
+                fullAddCount(x, uncontended);//最终计数手段。后续继续分析。如果操作countercell成功了就不用走这里
+                return;//fullAddCount成功了会直接跳过check扩容。
+            }
+            if (check <= 1)
+                return;//check<=1会跳过扩容。 如果是put方法如果增加了元素才会调这个方法。而且传入的值最小是2。
+            s = sumCount();//baseCount加上countercell中的所有值。
+        }
+        if (check >= 0) {//这里包含开始transfer的逻辑，所以不能直接调helptransfer。
+            Node<K,V>[] tab, nt; int n, sc;
+            while (s >= (long)(sc = sizeCtl) && (tab = table) != null &&
+                   (n = tab.length) < MAXIMUM_CAPACITY) {//该扩容了
+                int rs = resizeStamp(n) << RESIZE_STAMP_SHIFT;//先生成rs。 1000...版本号00000...000
+                if (sc < 0) {
+                    if (sc == rs + MAX_RESIZERS || sc == rs + 1 ||
+                        (nt = nextTable) == null || transferIndex <= 0)//这个是扩容已经结束
+                        break;//重新检查，是否需要扩容。因为扩容并不积极。所以有可能有时会连续两轮扩容。
+                    if (U.compareAndSetInt(this, SIZECTL, sc, sc + 1))
+                        transfer(tab, nt);//需要扩容，那就帮忙扩容
+                }
+                else if (U.compareAndSetInt(this, SIZECTL, sc, rs + 2))
+                    transfer(tab, null);//这里是由当前线程初始化的扩容。所以sc= rs+2
+                s = sumCount();//算一下元素数，方便下次循环计算扩容是否结束。
+            }
+        }
+    }
+```
+
+counterCell不够用。或者使用发生冲突了。一个保底手段。
+```java
+
+    // See LongAdder version for explanation
+    private final void fullAddCount(long x, boolean wasUncontended) {//只有竞争counterCell失败了，这里wasUncontended才是false。否则默认就是true。竞争成功的话，不会进入这个方法。所以这里要么是counterCell数组没建好或者格子没初始化（true）。否则就是有值，只是竞争失败了。false。 简单理解成是否是空格子。是就是true。竞争失败说明原先不是空格子所以是false。
+        int h;
+        if ((h = ThreadLocalRandom.getProbe()) == 0) {//getProbe为0表示没初始化
+            ThreadLocalRandom.localInit();      // force initialization
+            h = ThreadLocalRandom.getProbe();//名字叫线程的探针哈希值。实际就是用来散列线程用的。且每个线程有自己的种子。解决多线程时Random的瓶颈。
+            wasUncontended = true;//ThreadLocalRandom没初始化过，说明这段代码没跑过。CounterCell也是这个方法初始化的。所以自然设置成true。疑问，这里需要我手动设置成true吗？难道外层传进来的false不可信？
+        }
+        boolean collide = false;                // True if last slot nonempty
+        //初始化碰撞为false。如果最后一个槽位不空，则为true。
+        for (;;) {
+            CounterCell[] cs; CounterCell c; int n; long v;
+            if ((cs = counterCells) != null && (n = cs.length) > 0) {//cs不空的情况
+                if ((c = cs[(n - 1) & h]) == null) {//有cs但是这个格子是null
+                    if (cellsBusy == 0) {            // Try to attach new Cell
+                        CounterCell r = new CounterCell(x); // Optimistic create
+                        //cellsBusy为0说明cs没有在初始化或者扩容，就是说不忙，可用。否则自旋等待。所以这里是乐观锁。乐观创建。而CounterCell的构造函数很简单。就是赋值x。另外还有一个Contended注解。代表不要让CounterCell共享CPU缓存行。否则多线程操作下，同一缓存行反复刷新损耗性能。
+                        if (cellsBusy == 0 &&
+                            U.compareAndSetInt(this, CELLSBUSY, 0, 1)) {//cas加锁
+                            boolean created = false;//创建完成初始化为false
+                            try {               // Recheck under lock
+                            //拿到锁也要再检查下是否是空。
+                                CounterCell[] rs; int m, j;
+                                if ((rs = counterCells) != null &&//如果rs不空
+                                    (m = rs.length) > 0 &&//有size
+                                    rs[j = (m - 1) & h] == null) {//格子是空的
+                                    rs[j] = r;//这个格子初始化一下
+                                    created = true;
+                                }
+                            } finally {
+                                cellsBusy = 0;//释放锁
+                            }
+                            if (created)
+                                break;//创建成功结束自旋
+                            continue;//节点不空的情况continue         // Slot is now non-empty
+                        }
+                    }
+                    collide = false;//这个忙的情况下没创建成功看做没碰撞。
+                }
+                else if (!wasUncontended)       // CAS already known to fail
+                    wasUncontended = true;      // Continue after rehash
+                    //如果有竞争的情况，会白白自旋一次。就是addCount那边另外的线程还在用cs，空跑一轮稍微等一下。
+                else if (U.compareAndSetLong(c, CELLVALUE, v = c.value, v + x))//有格子的话，就设置值。
+                    break;
+                else if (counterCells != cs || n >= NCPU)
+                    collide = false;            // At max size or stale
+                else if (!collide)
+                    collide = true;
+                else if (cellsBusy == 0 &&
+                         U.compareAndSetInt(this, CELLSBUSY, 0, 1)) {
+                    try {
+                        if (counterCells == cs) // Expand table unless stale
+                            counterCells = Arrays.copyOf(cs, n << 1);//expand and copy old
+                    } finally {
+                        cellsBusy = 0;
+                    }
+                    collide = false;
+                    continue;                   // Retry with expanded table
+                }
+                h = ThreadLocalRandom.advanceProbe(h);//线程重新hash。即重新找个格子
+            }
+            else if (cellsBusy == 0 && counterCells == cs &&
+                     U.compareAndSetInt(this, CELLSBUSY, 0, 1)) {//这里尝试初始化。
+                boolean init = false;
+                try {                           // Initialize table
+                    if (counterCells == cs) {
+                        CounterCell[] rs = new CounterCell[2];//长度从2开始
+                        rs[h & 1] = new CounterCell(x);
+                        counterCells = rs;
+                        init = true;
+                    }
+                } finally {
+                    cellsBusy = 0;
+                }
+                if (init)//init成功就退出。
+                    break;
+            }
+            else if (U.compareAndSetLong(this, BASECOUNT, v = baseCount, v + x))//这个分支是尝试base的
+                break;                          // Fall back on using base
+        }
+    }
 ```
