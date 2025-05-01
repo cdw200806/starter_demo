@@ -280,41 +280,7 @@ Fwd只有一个find方法是属于自己独有的。简述下ForwardingNode的�
         }
 ```
 
-transfer 链表
-
-```
-                       if (fh >= 0) {
-                            int runBit = fh & n;
-                            Node<K,V> lastRun = f;
-                            for (Node<K,V> p = f.next; p != null; p = p.next) {
-                                int b = p.hash & n;
-                                if (b != runBit) {
-                                    runBit = b;
-                                    lastRun = p;
-                                }
-                            }
-                            if (runBit == 0) {
-                                ln = lastRun;
-                                hn = null;
-                            }
-                            else {
-                                hn = lastRun;
-                                ln = null;
-                            }
-                            for (Node<K,V> p = f; p != lastRun; p = p.next) {
-                                int ph = p.hash; K pk = p.key; V pv = p.val;
-                                if ((ph & n) == 0)
-                                    ln = new Node<K,V>(ph, pk, pv, ln);
-                                else
-                                    hn = new Node<K,V>(ph, pk, pv, hn);
-                            }
-                            setTabAt(nextTab, i, ln);
-                            setTabAt(nextTab, i + n, hn);
-                            setTabAt(tab, i, fwd);
-                            advance = true;
-                        }
-```
-lastRun+runbit 只优化了最后一段重复的runbit节点，节省头插。前面的即使是AAABBBAAAAAA。前六个元素只能一个一个头插。
+transfer 链表 lastRun+runbit 只优化了最后一段重复的runbit节点，节省头插。前面的即使是AAABBBAAAAAA。前六个元素只能一个一个头插。另外transfer
 
 扩容自旋中关于控制部分的代码的理解。采用插入注释的方式写一写。
 ```java
@@ -1173,3 +1139,921 @@ counterCell不够用。或者使用发生冲突了。一个保底手段。
         }
     }
 ```
+
+
+看完put看get是真心简单。加点注释
+
+```java
+    /**
+     * Returns the value to which the specified key is mapped,
+     * or {@code null} if this map contains no mapping for the key.
+     *
+     * <p>More formally, if this map contains a mapping from a key
+     * {@code k} to a value {@code v} such that {@code key.equals(k)},
+     * then this method returns {@code v}; otherwise it returns
+     * {@code null}.  (There can be at most one such mapping.)
+     *
+     * @throws NullPointerException if the specified key is null
+     */
+    public V get(Object key) {
+        Node<K,V>[] tab; Node<K,V> e, p; int n, eh; K ek;
+        int h = spread(key.hashCode());//扰动函数，与put对应
+        if ((tab = table) != null && (n = tab.length) > 0 &&
+            (e = tabAt(tab, (n - 1) & h)) != null) {//正常情况下是能找到对应的格子的
+            if ((eh = e.hash) == h) {//发现hash相同。那么比较一下key是否equals.
+                if ((ek = e.key) == key || (ek != null && key.equals(ek)))
+                    return e.val;
+            }
+            else if (eh < 0)//如果小于0。可能是-1 moved->forwarding node.  -2 TreeBin 是红黑树  -3 RESERVED 只有在compute 或者computeifAbsent的时候，并且空槽。才会放一个-3占位+CAS。(computeIfPresent自然不会遇到操作空槽，所以不会使用ReservationNode)
+                return (p = e.find(h, key)) != null ? p.val : null;//小于0，直接查。TreeBin/ForwardingNode/ReservationNode都实现了自己的find。其中ReservationNode最简单，直接返回null。
+            while ((e = e.next) != null) {//当>=0。直接普通链表方式遍历
+                if (e.hash == h &&
+                    ((ek = e.key) == key || (ek != null && key.equals(ek))))
+                    return e.val;//找到就返回，没有就是null
+            }
+        }
+        return null;
+    }
+```
+接下来看一下compute
+
+```java
+    /**
+     * Attempts to compute a mapping for the specified key and its
+     * current mapped value (or {@code null} if there is no current
+     * mapping). The entire method invocation is performed atomically.
+     * The supplied function is invoked exactly once per invocation of
+     * this method.  Some attempted update operations on this map by
+     * other threads may be blocked while computation is in progress,
+     * so the computation should be short and simple.
+     *
+     * <p>The remapping function must not modify this map during computation.
+     *** //这里是说remapping function只能计算，不能修改map。**
+     *
+     * @param key key with which the specified value is to be associated
+     * //compute方法需要指定key。而不是对所有元素生效。
+     * @param remappingFunction the function to compute a value
+     * //第二个参数就是remappingFuction
+     * @return the new value associated with the specified key, or null if none
+     * //返回的是新值，这里与put不同。put方法有值时返回老值，没有返回null，且put返回值与ifAbsent无关。
+     * @throws NullPointerException if the specified key or remappingFunction
+     *         is null //入参不能为null
+     * @throws IllegalStateException if the computation detectably
+     *         attempts a recursive update to this map that would
+     *         otherwise never complete//如果remapping函数对map进行更新。那么抛出异常。
+     * @throws RuntimeException or Error if the remappingFunction does so,//条件状语从句。remapping函数抛异常，则我也抛
+     *         in which case the mapping is unchanged
+     */
+    public V compute(K key,
+                     BiFunction<? super K, ? super V, ? extends V> remappingFunction) {//Bi ->指二元函数。后面单开一集Function函数。这里对remappingFunction的要求是，放宽对输入的要求。就是说至少你要能处理K。而且你要是能处理比K更抽象的数据，比如K的父类，那我也不介意。而输出要严格。因为客户只会处理V。你要给他兼容V的，也就是V的子类。这就是严以律己，宽以待人。
+        if (key == null || remappingFunction == null)
+            throw new NullPointerException();//入参不准是空
+        int h = spread(key.hashCode());//煎饼果子来一套，十分标准的扰动操作。在put,get中见过了。
+        V val = null;//
+        int delta = 0;//第四个希腊字母 Δ/δ （大写/小写），表示变化量。后面用作addCount参数表示+1还是-1。
+        int binCount = 0;
+        for (Node<K,V>[] tab = table;;) {//死循环
+            Node<K,V> f; int n, i, fh;
+            if (tab == null || (n = tab.length) == 0)//如果表空，先初始化表
+                tab = initTable();
+            else if ((f = tabAt(tab, i = (n - 1) & h)) == null) {//这里表不空了，但是桶是空的
+                Node<K,V> r = new ReservationNode<K,V>();
+                synchronized (r) {//桶空时，使用cas操作。这个synchronized是为了可见性，顺序性。
+                    if (casTabAt(tab, i, null, r)) {//这里是reservationNode占位成功了
+                        binCount = 1;//binCount看来是说这个桶上的元素数目
+                        Node<K,V> node = null;
+                        try {
+                            if ((val = remappingFunction.apply(key, null)) != null) {//apply一下。看看这个能不能计算出非null。如果是非null。那么+1。node就是代表新建的node。v=val，刚apply出来的。
+                                delta = 1;
+                                node = new Node<K,V>(h, key, val);
+                            }
+                        } finally {
+                            setTabAt(tab, i, node);//最终不管node是不是null，都把它塞进了tab。由于底层是native。所以这里看不到node是null时底层怎么处理的。猜会skip。
+                        }
+                    }
+                }
+                if (binCount != 0)//如果binCount不为0，就是处理完了。后面的不走了。
+                    break;
+            }
+            else if ((fh = f.hash) == MOVED)
+                tab = helpTransfer(tab, f);//发现在扩容。过去帮个忙。
+            else {
+                synchronized (f) {//这里就是说童桶非空的情况。使用synchronized对桶加锁。
+                    if (tabAt(tab, i) == f) {//对f加了锁。也要再检查下现在f是否还在桶上。不在了的话，直接继续自旋。
+                        if (fh >= 0) {//基础链表的case。
+                            binCount = 1;//初始化为1。这里自然至少有一个元素。
+                            for (Node<K,V> e = f, pred = null;; ++binCount) {//遍历
+                                K ek;
+                                if (e.hash == h &&
+                                    ((ek = e.key) == key ||
+                                     (ek != null && key.equals(ek)))) {
+                                    val = remappingFunction.apply(key, e.val);//找到了key。就计算一下。
+                                    if (val != null)
+                                        e.val = val;//计算出的值不是null就覆盖
+                                    else {//这里计算出的值是null,要删除键值对。
+                                        delta = -1;
+                                        Node<K,V> en = e.next;//找出下个节点
+                                        if (pred != null)
+                                            pred.next = en;//前面的节点指跳过这个被删的节点，指向后面一个。
+                                        else
+                                            setTabAt(tab, i, en);//hashmap数组只扩不缩，这里set成功就OK。
+                                    }
+                                    break;
+                                }
+                                pred = e;//没找到就继续往下找，更新pred
+                                if ((e = e.next) == null) {
+                                    val = remappingFunction.apply(key, null);//这里是没找到的case
+                                    if (val != null) {
+                                        if (pred.next != null)//没找到就是新增。如果发现我要增加的位置，有人占了。那就是remapping函数往里放元素了。因为已经加锁了，其他线程放不了。这里是尾插，检测到不对劲就直接抛出异常。这里可能是作者认为，这个新插入的元素没有被mapping过，所以报异常。根据我对代码的阅读，remmaping函数如果执行remove操作，删了这个桶上的元素。甚至删了被remmaping的元素，似乎都校验不出来。疑问，这个后续可以测一下。
+                                            throw new IllegalStateException("Recursive update");
+                                        delta = 1;//没找到，尾插。
+                                        pred.next = new Node<K,V>(h, key, val);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        else if (f instanceof TreeBin) {//是树
+                            binCount = 1;//初始化数目是1
+                            TreeBin<K,V> t = (TreeBin<K,V>)f;//定义t指向f
+                            TreeNode<K,V> r, p;
+                            if ((r = t.root) != null)//如果根节点不空
+                                p = r.findTreeNode(h, key, null);//直接找
+                            else
+                                p = null;//空树默认是null,代表找不到
+                            V pv = (p == null) ? null : p.val;//定义一个pv，是旧值。
+                            val = remappingFunction.apply(key, pv);//计算一下新值
+                            if (val != null) {//新值不为空
+                                if (p != null)//旧值不为空
+                                    p.val = val;//覆盖
+                                else {
+                                    delta = 1;//旧值是空，那么相当于多了一个元素。调用了putTreeVal。put方法其实类似，对于基础链表操作是直接写了代码。而putTreeVal用了额外一个方法。
+                                    t.putTreeVal(h, key, val);
+                                    //putTreeVal这附近的处理，没有看到和基础链表访问分支一样的抛异常。疑问，难道说，如果是树类型的桶，compute的时候可以让remapping执行put?不管源代码中有没有限制总之我认为这不是一个良好的操作。
+                                }
+                            }
+                            else if (p != null) {//如果新值空的，但是旧值不空。是减少了元素
+                                delta = -1;
+                                if (t.removeTreeNode(p))//处理删除p
+                                    setTabAt(tab, i, untreeify(t.first));
+                            }
+                        }
+                        else if (f instanceof ReservationNode)//感觉可以和moved判断并列，而不是放在加锁代码里面。意思是compute必须独占桶。
+                            throw new IllegalStateException("Recursive update");
+                    }
+                }
+                if (binCount != 0) {//处理基础链表的时候binCount才会++，而且如果提前找到，也不会触发这块逻辑。因为既然找到了，就不涉及增加元素。另外如果触发了树化，要看当前桶个数是否到达64。否则只会进行扩容，而不会进行树化。
+                    if (binCount >= TREEIFY_THRESHOLD)
+                        treeifyBin(tab, i);
+                    break;
+                }
+            }
+        }
+        if (delta != 0)
+            addCount((long)delta, binCount);//在put时看过了
+        return val;
+    }
+
+```
+
+Function<T, R>  Function接口。需要实现apply方法。就是说。一个Function对象。就可以调用apply方法。 apply输入，获得输出。这样这个调apply方法的Function对象，就像是一个方法。另外如果实现了apply方法。那么compose,andThen,就能自动使用。接口中的default关键字，使得接口就像抽象类一样能写代码。提供一个默认版本的实现。并且不会强制覆盖子类。Fuction接口还有一个静态方法，返回一个“返回自己”的Function。
+
+BiFunction 只有apply和 andThen。其中andThen是指andThen执行入参的方法。
+
+
+下界通配符--逆变--? super R
+关注输入类是否是R的父类。但泛型是父子关系不行，泛型必须强一致。
+![在这里插入图片描述](https://i-blog.csdnimg.cn/direct/ef69f1e0142140198aa16fadcfd3e110.png)
+
+![在这里插入图片描述](https://i-blog.csdnimg.cn/direct/6ecb4320ff8146e68b763de5c13716d4.png)
+这么写，起码编译是不报错了。
+
+
+总结+回忆：removeTreeNode 返回值为true时需要untreeify。也就是左孩子的左孩子是null需要untreeify。而不是明确有几个元素发生untreeify。
+put/compute 都是结束时根据 binCount 先处理是否 treeifyBin 在执行addCount。
+treeifyBin目前看到的就是大于等于8个元素会调用。但是元素个数小于64时会用扩容替代树化。
+addCount在存放元素结束时会发生。。如果addCount中触发了fullAddCount，那么不会扩容，也就是说线程并发程度高会在addCount中检测出来，即连续CAS操作baseCount和counterCell都失败。此时执行fullAddCount托底。并且本次addCount不会触发扩容。
+
+加注释的方式解析学习treeifyBin
+```java
+
+    /**
+     * Replaces all linked nodes in bin at given index unless table is
+     * too small, in which case resizes instead.
+     */
+    private final void treeifyBin(Node<K,V>[] tab, int index) {
+        Node<K,V> b; int n;
+        if (tab != null) {
+            if ((n = tab.length) < MIN_TREEIFY_CAPACITY)
+                tryPresize(n << 1);//如果不到64，比如63。执行尝试上一个size。
+            else if ((b = tabAt(tab, index)) != null && b.hash >= 0) {//这个分支说明n>=64。适合树化
+                synchronized (b) {//对桶加锁
+                    if (tabAt(tab, index) == b) {//这个又是在做二次检查。
+                        TreeNode<K,V> hd = null, tl = null;
+                        for (Node<K,V> e = b; e != null; e = e.next) {//虽是树，遍历还是当链表遍历
+                            TreeNode<K,V> p =
+                                new TreeNode<K,V>(e.hash, e.key, e.val,
+                                                  null, null);//这个就是每个节点都包装成树节点。 next/parent先不急。
+                            if ((p.prev = tl) == null)//无头，记录下头
+                                hd = p;
+                            else
+                                tl.next = p;//有头，直接续尾
+                            tl = p;//新尾巴
+                        }
+                        setTabAt(tab, index, new TreeBin<K,V>(hd));//TreeBin hd。可以把输入的链表建树。前面看过了。
+                    }
+                }
+            }
+        }
+    }
+```
+加注释的方式解析学习tryPresize
+
+
+```java
+    private final void tryPresize(int size) {
+        int c = (size >= (MAXIMUM_CAPACITY >>> 1)) ? MAXIMUM_CAPACITY ://大于等于最大值2的30次方的八分之一。也就是2的27次方时。数目定义的大一点。因为这个数量级扩容太费时。大数值触发调用tryPresize是putAll方法。
+            tableSizeFor(size + (size >>> 1) + 1);//而treeifyBin方法触发这个方法都是小值。最终c会直接从16扩容到64。相当于跳变了一次的扩容。这里可以测试一下。//补充根据退出逻辑，似乎要扩容到128。也就是2的7次方。
+        int sc;
+        while ((sc = sizeCtl) >= 0) {//sc大于等于0是扩容阈值
+            Node<K,V>[] tab = table; int n;
+            if (tab == null || (n = tab.length) == 0) {//待初始化，此时预期sc=0
+                n = (sc > c) ? sc : c;//这个sc会大于c吗？有点印象了。是先试用数值初始化一个map，但是还没put，所以还未初始化。但是sc已经有了。而且不是阈值，而是一个2的幂的一个容量。此时再执行putall会触发这个分支。或者说直接在new HashMap的时候输入一个集合。这样也会有一个默认的sc=16,然后触发putAll，进入这个方法。先用合并元素的1.5被倍左右的值来扩充一下。如果原先大小就能容纳这个合并元素数目的1.5倍。那么这个sc继续使用旧的。即哪个大选哪个。此时n就作为最终的n。也就是要初始化的目标。由初始容量，和输入容量综合决定。
+                if (U.compareAndSetInt(this, SIZECTL, sc, -1)) {//-1，要尝试初始化
+                    try {
+                        if (table == tab) {//加锁成功了，再检查下table还是不是那个table。如果不是了，把sc还原回去。这里有点疑问，既然table是volatile的，为何还要双重检查table。不是已经加锁了吗？//可以复习下单例二次检查锁，volatile的使用等。
+                            @SuppressWarnings("unchecked")
+                            Node<K,V>[] nt = (Node<K,V>[])new Node<?,?>[n];
+                            table = nt;//初始化
+                            sc = n - (n >>> 2);//扩容因子0.75。这里后面sizeCtl初始化完成之后就要变成扩容阈值了。
+                        }
+                    } finally {
+                        sizeCtl = sc;//此时变为扩容阈值。
+                    }
+                }
+            }
+            else if (c <= sc || n >= MAXIMUM_CAPACITY)//原先就够了。那就直接返回。
+                break;//treeifyBin时，c为64. 必然大于sc。所以无须担心走入这个分支。
+            else if (tab == table) {//treeifyBin最终走入这里。进行了扩容
+                int rs = resizeStamp(n);//生成rs
+                if (U.compareAndSetInt(this, SIZECTL, sc,
+                                        (rs << RESIZE_STAMP_SHIFT) + 2))//rs+线程数
+                    transfer(tab, null);//扩容一次。
+            }//扩容到n=64，此时sc=n乘以扩容因子依然小于c=64。最终扩容到128,验证通过。
+        }
+    }
+```
+
+小结论：当n低于64时，比如16/32等，如果某个桶上元素数达到8，此时的树化代码走的是扩容。在treeifyBin调tryPresize时，已经加了一倍，然后在tryPresize估算需要的空间时，利用c=tableforsize(1.5倍左右的input)。又给加了一倍。最后tryPresize退出的时候，要求c>sc。也就是说扩容到n=c仍然不行，因为sc在扩容结束后是n*扩容因子。最后直到扩容到原先的8倍，才算结束。
+这个验证过了。16---》128.  32--->256. 测试过程截图如下：
+![在这里插入图片描述](https://i-blog.csdnimg.cn/direct/576eeef2855f485da7df270ea937c1c0.png)
+compute和put对于空槽都是使用CAS处理。且整体风格类似。下面说一些细微差距：
+1.compute 在遇到空槽时，不仅使用CAS。还用了synchronized，但是锁的不是槽，锁的是ReservationNode。且仅空槽时才会放置一个ReservationNode。它的find方法会直接返回null。意味着在此期间查询结果会是null。至于为什么，我认为compute需要让remmaping函数与put一起成为一个原子操作。而cas只能保障put是原子的。这样就使用了一个synchronized锁，由于锁的是这个ReservationNode。所以其他线程会阻塞在synchronized f(其他线程拿不到这个锁)。或许ReservationNode的存在，仅仅是因为compute无法对null加锁，又要保障remapping与put的原子性才产生的结果。
+
+2.put与compute遇到ReservationNode都会直接抛出异常，当然这个抛异常是在对桶加锁的代码块中抛出的。意味着，抛异常时，这个桶是被当前线程占的，而不是其他线程。比如compute的remapping函数中对当前桶中的元素进行修改（之前分析过，所有的修改遇到ReservationNode都会抛出异常，包括put,remove,compute等）。就可能出现这样的异常。非空桶线程刚进去的时候，不可能是ReservationNode，因为ReservationNode仅在compute原子操作期间存在于桶上。等到其他线程能拿到锁时，compute处理空桶实际已经成功。所以这里只可能是compute处理空桶时，然后remapping方法又去执行修改操作，才会触发。这里再分析一下为什么这么限制。首先是put，本身这个位置放了个ReservationNode，你怎么put呢。没地方放。所以干脆禁止这种情况。至于删除，作者也抛出了异常，我倒是觉得可以直接return。毕竟reservation期间get返回的都是null。删除直接返回不就行了。但是报错也无可厚非，就是说你在compute/computeIfAbsent操作空桶时，无法使用remapping函数对该桶进行增删元素操作。但是，相应的，由于大多数报错依赖于ReservationNode。所以，当compute遇到非空桶操作，这种异常大大下降，所有根据桶节点类型判断的异常不会再抛出。比如
+1.桶上挂了基础链表，remapping进行元素删除
+2.桶上挂了一个红黑树，remapping进行增、删。
+这两种情况都不会再抛出异常。
+只有在桶上挂基础链表，remapping进行增操作时，作者象征性的抛出了个异常。因为这种case比较容易发现。所以个人感觉concurrentHashMap并不是那种严格死板的代码。而是有所取舍。
+
+```java
+                                pred = e;
+                                if ((e = e.next) == null) {
+                                    val = remappingFunction.apply(key, null);
+                                    if (val != null) {
+                                        if (pred.next != null)
+                                            throw new IllegalStateException("Recursive update");
+                                        delta = 1;
+                                        pred.next = new Node<K,V>(h, key, val);
+                                    }
+                                    break;
+                                }
+```
+这段代码中，apply进行了尾插，导致这里pred.next不再是空了，抛出异常。
+
+另外顺便分析下基础链表删除的情况。
+
+```java
+{
+                                    val = remappingFunction.apply(key, e.val);
+                                    if (val != null)
+                                        e.val = val;
+                                    else {
+                                        delta = -1;
+                                        Node<K,V> en = e.next;
+                                        if (pred != null)
+                                            pred.next = en;
+                                        else
+                                            setTabAt(tab, i, en);
+                                    }
+                                    break;
+```
+
+假设remapping函数执行了删除e。删除e只是对e进行了跳过。e此时还是指向了en。后续由于e无人消费，e会自动被回收。此时en仍然是正确的en。但是如果remmping函数里面执行完了删除触发下GC，这里可能空指针。(标记疑问待验证）。OK，然后假设remapping删除了pred。此时pred仍然指向e。在执行pred.next=en时，没什么大用。因为pred的pred ppred已经指向了e。pred将来会被回收。然后e是始终有人在用。e也是仍然指向en。所以这一套下来，只有pred被删掉了。e并没有被删掉。当然这里如果remapping触发gc,此时仍然可能抛出空指针。而解决这个问题也很简单，删除时，将对应节点显式置为null。这里catch空指针异常，然后throw递归异常即可。总结下来，由于本身remmaping不建议修改，所以这个问题就没那么致命。何况谁会在多线程去compute呢。
+
+computeIfAbsent 不会把已有的值进行覆盖，自然不会触发删除。（在源码中，使用桶首节点判断是否present，若是，直接返回，这一块逻辑没有加锁，提升了性能。这也是computeIfAbsent与另外两个compute存在的一个主要源码差异。）已有的话，直接返回已有的值。如果Absent,返回remapping的值。总体效果compute相关方法结束返回的是最新的值。
+
+compute-->返回remapping后的值。
+
+computeIfPresent--> 找到了才会remapping,并返回新值。找不到返回的是null
+
+通过加注释学习一下replaceNode:
+
+    /**
+     * Implementation for the four public remove/replace methods:
+     * Replaces node value with v, conditional upon match of cv if
+     * non-null.  If resulting value is null, delete.
+     */
+     //这个方法分cv是否为null。如果cv是null则不管当前是何值，替换为第二个参数value。如果cv不为空，则需旧值匹配才行。这个方法被用于replace与remove。成功执行最终返回的是旧值。这个与put类似。
+    final V replaceNode(Object key, V value, Object cv) {
+        int hash = spread(key.hashCode());//标准的扰动操作，煎饼果子来一套。
+        for (Node<K,V>[] tab = table;;) {//自旋
+            Node<K,V> f; int n, i, fh;
+            if (tab == null || (n = tab.length) == 0 ||
+                (f = tabAt(tab, i = (n - 1) & hash)) == null)//这里是表空。
+                break;
+            else if ((fh = f.hash) == MOVED)
+                tab = helpTransfer(tab, f);//如果在做扩容，去帮忙
+            else {
+                V oldVal = null;
+                boolean validated = false;
+                synchronized (f) {//加锁
+                    if (tabAt(tab, i) == f) {
+                        if (fh >= 0) {//基础链表的操作
+                            validated = true;//合法数据
+                            for (Node<K,V> e = f, pred = null;;) {//死循环
+                                K ek;
+                                if (e.hash == hash &&
+                                    ((ek = e.key) == key ||
+                                     (ek != null && key.equals(ek)))) {//这里就是说找到了
+                                    V ev = e.val;
+                                    if (cv == null || cv == ev ||
+                                        (ev != null && cv.equals(ev))) {//根据cv校验一下。校验通过继续执行if方法体内逻辑。cv是null则无需校验也执行。
+                                        oldVal = ev;//旧值保存一下
+                                        if (value != null)
+                                            e.val = value;//新值不是null就把老值刷新调
+                                        else if (pred != null)
+                                            pred.next = e.next;//这里是需要删除的情况，如果有前节点，这里执行了一个跳过操作
+                                        else
+                                            setTabAt(tab, i, e.next);//没有前面的节点。用setTabAt。已经加锁了，所以操作安全。
+                                    }
+                                    break;//找到了，但是cv不匹配，最终会返回null。
+                                }
+                                pred = e;//重定义pred
+                                if ((e = e.next) == null)//没找到，也返回null
+                                    break;
+                            }
+                        }
+                        else if (f instanceof TreeBin) {//对红黑树的操作
+                            validated = true;//合法数据
+                            TreeBin<K,V> t = (TreeBin<K,V>)f;
+                            TreeNode<K,V> r, p;
+                            if ((r = t.root) != null &&
+                                (p = r.findTreeNode(hash, key, null)) != null) {//直接用TreeNode类的findTreeNode方法。当然r是TreeNode类型。r是使用了TreeBin中的root属性。
+                                V pv = p.val;
+                                if (cv == null || cv == pv ||
+                                    (pv != null && cv.equals(pv))) {//这里也是找到之后的校验
+                                    oldVal = pv;//校验通过，先保存旧值
+                                    if (value != null)
+                                        p.val = value;//新值不空，覆盖
+                                    else if (t.removeTreeNode(p))//删除之后如果需要untreeify，则untreeify。
+                                        setTabAt(tab, i, untreeify(t.first));//这就是untreeify的标准操作。数据源是t.first。也是TreeNode类型。
+                                }
+                            }
+                        }
+                        else if (f instanceof ReservationNode)
+                            throw new IllegalStateException("Recursive update");//compute相关方法，也不能执行replace修改动作。
+                    }
+                }
+                if (validated) {
+                    if (oldVal != null) {
+                        if (value == null)
+                            addCount(-1L, -1);//老值不空，但新值空。计数--。第二个值小于0代表无需触发扩容检测。
+                        return oldVal;
+                    }
+                    break;
+                }
+            }
+        }
+        return null;//默认返回null
+    }
+
+小发现：一直put元素。桶数目是2的30次方有上线，但元素数没上限，起码不会报错。直到addCount中long计算溢出为负数（）。仍然不报错。
+        System.out.println(Long.MAX_VALUE + 1 == Long.MIN_VALUE);  为true。
+        但此时对内存的消耗达到EB级别。肯定是不现实的。
+
+通过加注释学习一下一个使用了replaceNode的方法：
+
+```java
+
+    public void replaceAll(BiFunction<? super K, ? super V, ? extends V> function) {//一个二元函数
+        if (function == null) throw new NullPointerException();//function不允许null。是指根据输入k,v计算new v。
+        Node<K,V>[] t;
+        if ((t = table) != null) {
+            Traverser<K,V> it = new Traverser<K,V>(t, t.length, 0, t.length);//迭代器，后面会单独开一段分析。
+            for (Node<K,V> p; (p = it.advance()) != null; ) {//迭代
+                V oldValue = p.val;
+                for (K key = p.key;;) {//死循环
+                    V newValue = function.apply(key, oldValue);//这里是利用给定的函数计算一下new v。
+                    if (newValue == null)//replace不喜欢有null。
+                        throw new NullPointerException();
+                    if (replaceNode(key, newValue, oldValue) != null ||//不为null就是成功了
+                        (oldValue = get(key)) == null)//替换不成功，比如校验不过。这里当旧值是null就会跳过当前entry。
+                        break;
+                    //疑问，内层的循环有什么用。--2025-04-25想明白了，这里是为了数据一致性。继续死循环的条件是：是说返回的值是null且新值不是null。返回是null时，一种是不匹配，一种是新值是null(由于校验排除)，一种是旧值是null被填上新值(这个会进入下一次循环，疑问，也就是说如果有空V节点，replaceAll)。
+                }
+            }
+        }
+    }
+
+```
+
+@Contended 解决伪共享问题。L3级缓存涉及多核共享，所以当两个变量使用同一个缓存行时，容易造成缓存行失效频繁。而L1,L2在涉及到映射了共享内存时，也有类似问题。ConcurrentHashMap中@Contended加载了 CounterCell上。
+
+
+
+这个是Traverser的迭代方法。通过加注释学习一下。
+
+```java
+        /**
+         * Advances if possible, returning next valid node, or null if none.
+         */
+        final Node<K,V> advance() {
+            Node<K,V> e;
+            if ((e = next) != null)
+                e = e.next;//next不是空的情况，就是说目前在一个正常的数据比如基础链表或红黑树上在遍历中。这里将e重定义到下一个节点之后，后面的for循环中会输出下一个节点。其实这儿看到的next其实是上次正常输出的e。
+            for (;;) {
+                Node<K,V>[] t; int i, n;  // must use locals in checks
+                if (e != null)//这里就是e的正常输出
+                    return next = e;//输出完要把next重定义
+                if (baseIndex >= baseLimit || (t = tab) == null ||
+                    (n = t.length) <= (i = index) || i < 0)
+                    return next = null;//一方面处理越界等判断，另外t=tab,n=t.length,i=index也是循环中很重要的循环体。
+                if ((e = tabAt(t, i)) != null && e.hash < 0) {//拿取桶上的元素。如果hash小于0，进行分析。
+                    if (e instanceof ForwardingNode) {
+                        tab = ((ForwardingNode<K,V>)e).nextTable;//找到新表
+                        e = null;//找到新表的时候，把e置为null
+                        pushState(t, i, n);//访问底层表，要压状态
+                        continue;//tab已经是新表了，压栈完直接重新循环就进入底层表进行寻找了。遍历完高位，低位两个桶之后会通过revover回来。
+                    }
+                    else if (e instanceof TreeBin)
+                        e = ((TreeBin<K,V>)e).first;//如果是树管理节点。获取第一个元素。属于正常遍历的场景
+                    else
+                        e = null;//置null 小于0的情况不是在扩容也不是树。初始化时，这个桶上应该是null。所以我认为这里是当遇到reservationNode。就置null。疑问，在compute的时候，去执行遍历，这样会不会导致死循环。这里算是留个断言把。总之compute的时候remapping函数最好不要去乱执行一些map内置方法。
+                }
+                if (stack != null)//如果栈不空
+                    recoverState(n);//出栈，具体判断是否出栈的逻辑在recoverState内部。高低位都访问完才会弹出。
+                else if ((index = i + baseSize) >= n) //stack为null，代表没得弹了。只有最顶层的表才可以执行++操作。这里i+baseSize>=n我认为是个保险操作。因为baseSize在一级表是，必然是大于等于n的。
+                    index = ++baseIndex; // visit upper slots if present
+                    //一级表继续遍历下一个桶
+            }
+        }
+```
+
+关于Traverser的advance的小感悟。初看这个方法，可能理解有点困难。但是我可以先大致了解了它是一个递归处理的过程，然后想想，利用它这些数据结构自己去做，会怎么做，会遇到哪些问题。比如Traverser的advance怎么避免重复遍历。在拿到桶上的元素时，只要不是ForwardingNode，就可以对它进行遍历。因为就算我拿到的时候，map去做扩容也很快完成了。但是由于我的e指向了数据，所以数据不会被回收。直到我遍历完这个桶，这个next指针会一直生效。这一串都会等到我遍历完才可能回收。这就是所谓的有用即不会被回收。GC的自动管理。然后比如我去访问下一个桶的时候，假如发生了扩容。在我判断它发生扩容的一瞬间，说明我已经在使用这个ForwardingNode。我在拿一个指针指向了它。所以就算是当前map已经发生了100次扩容。由于我这个ForwardingNode的存在，所有的101个表，全都不能GC。因为ForwardingNode这一串下去都要保留的。事实上，由于我第一个table都保留住了，那么所有table必然留住了。毕竟ForwardingNode挂在table上。用stack保存了旧表。保证这些表不会被回收。我遇到已经迁移完的，我就去访问新表，大小桶都访问一下就返回。只有最老的表才会执行++操作。可能你会说，扩容过程中，只有tab和nexttab,何必返回老表去查询。但是如果不返回老表，你很难知道当前节点之前的节点是否应该回头遍历一下，为了代码简洁明确，是我的话，我也会返回老表去进行Forwarding遍历，根据这个数据结构，我认为是一种深度优先遍历，直到这个桶遍历完成。
+
+
+通过加注释学习一下pushState方法：
+
+```java
+        /**
+         * Saves traversal state upon encountering a forwarding node.
+         */
+        private void pushState(Node<K,V>[] t, int i, int n) {
+            TableStack<K,V> s = spare;  // reuse if possible
+            if (s != null)//复用spare对象
+                spare = s.next;
+            else
+                s = new TableStack<K,V>();//没有则新建
+            s.tab = t;//刷新压栈的值，由于是否复用spare对以下代码复用，所以length,tab也重新刷新了一下。
+            s.length = n;
+            s.index = i;//更新下标
+            s.next = stack;//递归引用
+            stack = s;//换栈顶
+        }
+
+```
+通过加注释学习一下recoverState方法：
+```java
+        /**
+         * Possibly pops traversal state.
+         *
+         * @param n length of current table
+         */
+        private void recoverState(int n) {
+            TableStack<K,V> s; int len;
+            while ((s = stack) != null && (index += (len = s.length)) >= n) {//这个是判断是否已经到了顶层。以及低层中跳高位或者返回高层的代码。只要当前低层还能访问高位，就不会执行while循环体内的recover。刷index后在外层继续访问。当前低层已访问完毕时，再recover。
+                n = len;//可能出现连续recover的情况，所以刷新一下n。
+                index = s.index;//恢复 index
+                tab = s.tab;//恢复 tab
+                s.tab = null;//恢复完tab之后把对tab的引用置空。疑问是这个动作有何意义。由于forwardingNode的存在，tab指向的table是不可能被提前回收的。除非Traverser声明周期结束。
+                TableStack<K,V> next = s.next;//恢复时，spare的引用链会变长。而s.next会成为新栈顶
+                s.next = spare; // save for reuse   //这行代码其实和倒数第二行到换下，更好理解一点。这个是延长spare链。
+                stack = next;//更新栈顶
+                spare = s;//更新spare顶
+            }
+            if (s == null && (index += baseSize) >= n)//回到最顶层。且目前的index不正确。
+                index = ++baseIndex;//刷新index的值到baseIndex+1。baseIndex的修改强绑定stack为null证明了只有在最顶层，也就是原始tab中，才会有index++的操作。
+        }
+    }
+```
+
+
+
+2025-04-24.  每天2h，共计3天。也就是六小时的学习时长。终于搞明白了这段代码的细节。最后理解的是spare。但是当把其他简单的部分梳理干净，然后慢慢分析spare的作用，也就迎刃而解。 由于在遍历过程中对于ForwardingNode的处理是一种深度遍历，而且由于多级连续扩容的可能性，可能发生遍历在多级table中反复push, recover。为了节约内存，主要是指push的时候，不去创建新的TableStack。（反过来想，为了节约这一丢丢的内存，导致代码可读性非常差，真的值的吗？何况GC会自动回收相应内存）总之，同一级别的table最多只new一次TableStack。在第一次recoverState时，才会第一次产生spare（注：最底层不会被压栈，所以也不会被引用为spare）。自此之后，stack代表从上一层到最顶层的table。而spare代表从当前层到倒数第二层的TableStack。当需要push时，直接用spare所引用的对象，重写其中的值索引等信息。并且spare相应的也要重定义。毕竟已经压栈。即stack下移增多一层，spare下移减少一层。
+
+Traverser的用途
+1.containsValue用到了Traverser来遍历
+2.concurrentHashMap对象的hashCode用到了，遍历所有元素对（k，v的hashcode做异或）求和。
+3.toString方法用来遍历打印KV,遇到递归时（k,v  为this），就写死替换为"(this Map)"
+4.hashCode,equal
+5.writeObject
+6.forEach 使用了访问者模式
+7.replaceAll 看过了。
+8.removeEntryIf
+9.removeValueIf
+10.BaseIterator集成自Traverser。Traverser关注advance。但是后面这些迭代器直接使用next。所以BaseIterator在初始化的时候就执行了一次advance。让next变成第一个元素。
+11.KeySpliterator
+12.ValueSpliterator
+13.EntrySpliterator
+14.KeySetView
+15.ValuesView
+16:EntrySetView
+
+
+序列化，反序列化的代码，通过加注释的方式学习一下。
+```java
+    /**
+     * Saves this map to a stream (that is, serializes it).
+     *
+     * @param s the stream
+     * @throws java.io.IOException if an I/O error occurs
+     * @serialData
+     * the serialized fields, followed by the key (Object) and value
+     * (Object) for each key-value mapping, followed by a null pair.
+     * The key-value mappings are emitted in no particular order.
+     */
+    private void writeObject(java.io.ObjectOutputStream s)//入参是一个对象输出流
+        throws java.io.IOException {
+        // For serialization compatibility
+        // Emulate segment calculation from previous version of this class
+        int sshift = 0;//为了向后兼容，让老版本的jdk也能反序列化这个结果。所以手动计算已废弃的三个变量之后手动赋输出流里。
+        int ssize = 1;
+        while (ssize < DEFAULT_CONCURRENCY_LEVEL) {
+            ++sshift;//直到ssize变成32。此时sshift是5
+            ssize <<= 1;//32
+        }
+        int segmentShift = 32 - sshift;//27
+        int segmentMask = ssize - 1;//31
+        @SuppressWarnings("unchecked")
+        Segment<K,V>[] segments = (Segment<K,V>[])
+            new Segment<?,?>[DEFAULT_CONCURRENCY_LEVEL];//new分段表数组
+        for (int i = 0; i < segments.length; ++i)
+            segments[i] = new Segment<K,V>(LOAD_FACTOR);//初始化分段表
+        java.io.ObjectOutputStream.PutField streamFields = s.putFields();//使用PutField来手动定制化一些序列化的字段
+        streamFields.put("segments", segments);//向后兼容，把分段涉及的三个字段手动序列化
+        streamFields.put("segmentShift", segmentShift);
+        streamFields.put("segmentMask", segmentMask);
+        s.writeFields();//写入字段
+
+        Node<K,V>[] t;
+        if ((t = table) != null) {
+            Traverser<K,V> it = new Traverser<K,V>(t, t.length, 0, t.length);
+            for (Node<K,V> p; (p = it.advance()) != null; ) {
+                s.writeObject(p.key);//切换了JVM，hash值可能不对了，所以key手动处理下
+                s.writeObject(p.val);//key value使用readObject遍历写入
+            }
+        }
+        s.writeObject(null);
+        s.writeObject(null);//连续两个null代表终止
+    }
+
+ConcurrentHashMap实现readObject。当 ObjectInputStream对象在执行readObject方法时，JVM底层执行是，根据流中的类信息，使用反射建立一个未初始化的ConcurrentHashMap对象，然后使用反射用这个对象来调用ConcurrentHashMap的readObject对象。最终完成反序列化。当然自己new一个ConcurrentHashMap对象，然后去调自己类的readObject。理论上也可行。
+
+    /**
+     * Reconstitutes this map from a stream (that is, deserializes it).
+     * @param s the stream
+     * @throws ClassNotFoundException if the class of a serialized object
+     *         could not be found
+     * @throws java.io.IOException if an I/O error occurs
+     */
+    private void readObject(java.io.ObjectInputStream s)
+        throws java.io.IOException, ClassNotFoundException {
+
+        /*
+         * To improve performance in typical cases, we create nodes
+         * while reading, then place in table once size is known.
+         * However, we must also validate uniqueness and deal with
+         * overpopulated bins while doing so, which requires
+         * specialized versions of putVal mechanics.
+         */
+        sizeCtl = -1; // force exclusion for table construction
+        //-1代表初始化中
+        s.defaultReadObject();//只能在readObject方法中调用这个方法。
+        //读取属于非静态的，属于实例的字段，且非transient的字段。
+        long size = 0L;
+        Node<K,V> p = null;
+        for (;;) {
+            @SuppressWarnings("unchecked")
+            K k = (K) s.readObject();//使用readObject读key。因为可能切换了JVM需要重新Hash。
+            @SuppressWarnings("unchecked")
+            V v = (V) s.readObject();
+            if (k != null && v != null) {
+                p = new Node<K,V>(spread(k.hashCode()), k, v, p);//头插
+                ++size;
+            }
+            else
+                break;
+        }
+        if (size == 0L)
+            sizeCtl = 0;
+        else {
+            long ts = (long)(1.0 + size / LOAD_FACTOR);//这个是为方便计算下容量
+            int n = (ts >= (long)MAXIMUM_CAPACITY) ?
+                MAXIMUM_CAPACITY : tableSizeFor((int)ts);//tableSizeFor保证结果是2的幂次。
+            @SuppressWarnings("unchecked")
+            Node<K,V>[] tab = (Node<K,V>[])new Node<?,?>[n];//初始化table
+            int mask = n - 1;//掩码
+            long added = 0L;//元素数量
+            while (p != null) {//死循环
+                boolean insertAtFront;//是否头插
+                Node<K,V> next = p.next, first;
+                int h = p.hash, j = h & mask;//此时的hash已经处理好了。h& n-1 其实就是桶位
+                if ((first = tabAt(tab, j)) == null)//如果空童
+                    insertAtFront = true;//头插
+                else {
+                    K k = p.key;
+                    if (first.hash < 0) {//头小于零
+                        TreeBin<K,V> t = (TreeBin<K,V>)first;//小于0直接认作TreeBin
+                        if (t.putTreeVal(h, k, p.val) == null)//执行TreeBin的putTreeVal方法
+                            ++added;//数量++
+                        insertAtFront = false;//非头插
+                    }
+                    else {
+                        int binCount = 0;
+                        insertAtFront = true;//是数组，也要往头上插。
+                        Node<K,V> q; K qk;
+                        for (q = first; q != null; q = q.next) {
+                            if (q.hash == h &&
+                                ((qk = q.key) == k ||
+                                 (qk != null && k.equals(qk)))) {
+                                insertAtFront = false;//如果已经有了，直接处理下一个
+                                break;
+                            }
+                            ++binCount;//如果当前没找到，当做binCount++
+                        }
+                        if (insertAtFront && binCount >= TREEIFY_THRESHOLD) {//头插，而且在找到元素时，bincount已经加到了8。
+                            insertAtFront = false;//不头插了，要树化
+                            ++added;//数量增加
+                            p.next = first;
+                            TreeNode<K,V> hd = null, tl = null;
+                            for (q = p; q != null; q = q.next) {//所谓树化，就是建一堆用next连接的node。然后TreeBin的构造方法就能完成。
+                                TreeNode<K,V> t = new TreeNode<K,V>
+                                    (q.hash, q.key, q.val, null, null);//这个就是建node
+                                if ((t.prev = tl) == null)//将t的前序设置为尾巴。如果之前就没有尾巴。
+                                    hd = t;//t就是头
+                                else
+                                    tl.next = t;//否则在尾巴上续就行。
+                                tl = t;//更新尾指针
+                            }
+                            setTabAt(tab, j, new TreeBin<K,V>(hd));//树化并置于桶。
+                        }
+                    }
+                }
+                if (insertAtFront) {//头插代码复用
+                    ++added;//加数目
+                    p.next = first;//头插
+                    setTabAt(tab, j, p);//置于桶上
+                }
+                p = next;//循环的迭代表达式
+            }
+            table = tab;//设置table
+            sizeCtl = n - (n >>> 2);//sizeCtl常态下是下次扩容时的阈值。
+            baseCount = added;//更新计数，直接使用baseCount。
+        }
+    }
+
+```
+
+关于splitor,现在我看着像是一个非常好的用来分配任务的方法。让元宝帮写了一个分成N份任务的代码。
+
+```java
+       // 循环分割，直到达到目标数量或无法再分割
+        int currentSize = 1;
+        while (currentSize < n) {
+            boolean splitOccurred = false;
+            for (int i = 0; i < currentSize; i++) {
+                Spliterator<K> current = spliterators.get(i);
+                Spliterator<K> splitResult = current.trySplit();
+                if (splitResult != null) {
+                    spliterators.add(splitResult);
+                    currentSize++;//广度优先遍历，直到分组达到n。
+                    splitOccurred = true;
+                    if (currentSize >= n) break;
+                }
+            }
+            if (!splitOccurred) break; // 无法进一步分割
+        }
+```
+这个方法，类似广度优先遍历。每次使用split把任务数目增倍，且每个任务的量减半。最后返回的Spliterator List可以让线程分别去执行。可以使用线程池把这些任务都交给线程池。可以使用forEachRemaining这个方法负责具体每个Spliterator的执行。
+
+
+cocurrentHashMap提供 reduce方法。这个类似Hadoop中的MapReduce。需要函数满足结合律。
+比如求和，先用transformer函数生成每个kv对应的积分。而使用ForJoinPool最终多线程完成reduce。
+具体的：
+MapReduceMappingsTask<K,V,U>  extends BulkTask<K,V,U>
+BulkTask<K,V,R> extends CountedCompleter<R>   CountedCompleter开始不是ConcurrentHashMap中的了
+CountedCompleter<T> extends ForkJoinTask<T>
+ForkJoinTask<V> implements Future<V>
+
+根据元宝分析，ForkJoinTask适合简单分治。而CountedCompleter通过onCompletion()适合有复杂协作，DAG场景等。
+
+```java
+    /**
+     * Returns the result of accumulating the given transformation
+     * of all (key, value) pairs using the given reducer to
+     * combine values, or null if none.
+     *
+     * @param parallelismThreshold the (estimated) number of elements
+     * needed for this operation to be executed in parallel
+     * @param transformer a function returning the transformation
+     * for an element, or null if there is no transformation (in
+     * which case it is not combined)
+     * @param reducer a commutative associative combining function
+     * @param <U> the return type of the transformer
+     * @return the result of accumulating the given transformation
+     * of all (key, value) pairs
+     * @since 1.8
+     */
+    public <U> U reduce(long parallelismThreshold,
+                        BiFunction<? super K, ? super V, ? extends U> transformer,
+                        BiFunction<? super U, ? super U, ? extends U> reducer) {
+        if (transformer == null || reducer == null)
+            throw new NullPointerException();
+        return new MapReduceMappingsTask<K,V,U>//使用多线程去做transformer+reducer。
+            (null, batchFor(parallelismThreshold), 0, 0, table,//batchFor计算一批多少元素好
+             null, transformer, reducer).invoke();
+    }
+```
+
+```java
+    @SuppressWarnings("serial")
+    static final class MapReduceMappingsTask<K,V,U>
+        extends BulkTask<K,V,U> {
+        final BiFunction<? super K, ? super V, ? extends U> transformer;
+        final BiFunction<? super U, ? super U, ? extends U> reducer;
+        U result;
+        MapReduceMappingsTask<K,V,U> rights, nextRight;
+        MapReduceMappingsTask
+            (BulkTask<K,V,?> p, int b, int i, int f, Node<K,V>[] t,
+             MapReduceMappingsTask<K,V,U> nextRight,
+             BiFunction<? super K, ? super V, ? extends U> transformer,
+             BiFunction<? super U, ? super U, ? extends U> reducer) {
+            super(p, b, i, f, t); this.nextRight = nextRight;
+            this.transformer = transformer;
+            this.reducer = reducer;
+        }//构造方法。包含 transformer, reducer等
+        public final U getRawResult() { return result; }//立即获得结果
+        public final void compute() {//继承于CountedCompleter必须要实现的方法。负责递归判断任务是否继续分解或直接执行。
+            final BiFunction<? super K, ? super V, ? extends U> transformer;
+            final BiFunction<? super U, ? super U, ? extends U> reducer;
+            if ((transformer = this.transformer) != null &&
+                (reducer = this.reducer) != null) {
+                for (int i = baseIndex, f, h; batch > 0 &&
+                         (h = ((f = baseLimit) + i) >>> 1) > i;) {//这个是ConcurrentHashMap作者沉迷于位运算。导致任务分割代码的可读性比较差。这里的batch是上层的reduce方法根据 batchFor(并发阈值){大概逻辑是总数/阈值=任务分解成多少组}计算而来。batch可以简单理解成任务分解成多少份。而这里在递归分解任务的时候，每次把batch右移一位，同时也触发任务减半。当batch右移没了，比如8在四轮减半变为0。此时任务也经过了四轮减半。单组任务分解成原来的1/16。
+                    addToPendingCount(1);//此方法源于countedCompleter,代表待完成的任务加1。
+                    (rights = new MapReduceMappingsTask<K,V,U>
+                     (this, batch >>>= 1, baseLimit = h, f, tab,
+                      rights, transformer, reducer)).fork();//头插。新建了个任务覆盖了当前的rights。让旧的变成当前nextRight。其中batch减半。进行了一次分治。
+                }
+                U r = null;
+                for (Node<K,V> p; (p = advance()) != null; ) {//compute先判断能否继续分任务，不能则负责具体执行。这里开始遍历当前任务
+                    U u;
+                    if ((u = transformer.apply(p.key, p.val)) != null)
+                        r = (r == null) ? u : reducer.apply(r, u);//map and reduce
+                }
+                result = r;//结果存于result
+                CountedCompleter<?> c;
+                for (c = firstComplete(); c != null; c = c.nextComplete()) {//后续单开讲解countedCompleter中的这两个方法。
+                    @SuppressWarnings("unchecked")//返回null有两种情况，如果firstComplete就返回null，是说任务还没执行完。这样退出逻辑会转移到子任务中。如果nextComplete返回null。也可能是当前任务已经是顶级任务了，无需再进行最后的结果归并。另外nextComplete方法如果不是顶级任务， 会递归的调用父任务的firstComplete执行并返回。此时如果父任务没有完成，只要对父任务计数-1即可。相应的结束逻辑也会转移到其他线程。
+                    MapReduceMappingsTask<K,V,U>
+                        t = (MapReduceMappingsTask<K,V,U>)c,//c是代表当前焦点任务，且其子任务已经完成。
+                        s = t.rights;//s是当前焦点的任务链，由于任务链是头插的，所以越往后越是父级任务。前面在分割任务的时候，把后半部分数据会分给其他任务，并且rights会更新成子任务。而子任务的nextRight是当前任务。形成一个任务链。
+                    while (s != null) {当s还有父任务时
+                        U tr, sr;
+                        if ((sr = s.result) != null)//如果父任务结果不是null
+                            t.result = (((tr = t.result) == null) ? sr :
+                                        reducer.apply(tr, sr));//mapReduce的精髓就在于结果可以合并 这里是把当前焦点的一串任务结果都合并起来。合到t.result。也就是当前焦点任务的result。
+                        s = t.rights = s.nextRight;//每次迭代，释放一个任务。
+                    }
+                }
+            }
+        }
+    }
+
+```
+
+这里总结下分解任务的原则。
+1.一直分解到batch=0或者task不够分。
+2.baseLimit初始值为tableSize（前半段取不到baseLimit）。所以后续分配中点位置给了后半段（baseIndex）。
+3.每次循环，先执行新任务的next为老rights。然后把老rights指向新任务。是头插的。（相当于A可以拿到Rights然后遍历nr）
+4.观察A分解任务，不要去想A分解出的子任务是如何继续自我分解完成，每个任务只要做好自己的事情就行。只要A完成任务的分解，合并，那么自动视为任务分解合并方法是OK的。所以也证明了A没有分解到位的子任务也能够自理完成。
+
+以0-32的任务举例。A是由于程序员执行reduce方法初始化来的任务。接着执行到了compute。
+1.第一次分解
+A：0-15
+B:  16-32
+此时B先将nr指向A的r也就是null。然后A的r指向新new出来的B
+2.第二次分解，需要注意的时，当前任务的关注点始终还是关注于完成A，至于B的完成与否，本线程暂时不需要关注，可以由其他线程完成。比如ForkJoinTask的默认线程池ForkJoinPool.common。
+A: 0-6
+C：7-15
+B:16-32
+此时，C先将nr指向A的r也就是B。然后A的r指向新new出的C。
+如此循环下去，新new出的task越来越小。A也越来越小。而之前new出的task虽然大，但最终交由线程池递归完成，也无需担心。
+......
+此时到了最后，A变成0-0。只有一个元素，无法再分解。此时A的r是1。而A与r合并之后的结果，一定能与下一个nr继续合并。最后像多米诺骨牌一样。合并了所有A分出去的task。
+当nr指向null时。意味着A完成。
+
+这里留个疑问：
+更一般意义上。A完成之后，是主动找分出A的人合并呢，还是等着分我的人合并。还是算完之后就去任务窃取，接别的活。
+
+下面解答上面的疑问，需要给出一些知识。
+1.上述代码中，如果需要分解任务，那么addToPendingCount。让计数+1。当最后A要执行的的时候，就不需要+1了。所以，只要其他A分出去的任务都完成了。此时firstComplete就会返回this。进入合并逻辑。最终把A的result计算好。
+2.关于nextComplete用到的父任务completer。这个其实在任务分解的时候传入了。在MapReduceMappingsTask中，他叫p,在BulkTask中它叫par，而最终在CountedCompleter中，它叫completer。是通过this传入的。也就是说A分解出的task。completer都是A。这些属于层级比较低的。而层级最高的那就是B靠右的那些任务。比如最后一个元素的任务。
+3.如果原始任务A在完成分解工作，并处理好起点元素的运算工作时，其他已经分解出去的任务，还未完成。这个一般是个正常现象。但是此时compute已经执行完毕。
+4.reduce方法，初始化的时候，执行的是A.invoke。阻塞到A产生结果。而A在分解子任务时，使用的是fork，这个不阻塞，只是提交到队列。
+5.层次最深的任务32。它在完成后会递归的的执行pending--,最终导致A的pending为0。
+6. compute方法调用链：
+    ConcurrentHashMap的reduce方法执行了MapReduceMappingsTask对象的invoke。->
+    invoke方法继承于ForkJoinTask。它执行了doExec，进而执行exec。->
+    CountedCompleter在重写exec时，执行了compute。
+    所以说invoke会触发MapReduceMappingsTask的compute方法。
+7.关于一般case下的任务结束。首先A自己的执行由于有子任务还在执行，所以结束循环。然后讨论第32个元素。它也是先执行第32个元素的处理。然后开始循环。初始条件是firstComplete。这个方法由于没分解任务。所以return this。回到compute方法不等于null，进行合并。由于没有需要合并的，result就是结果。接着执行nextComplete。因为第32个元素的父任务有很多，所以会依次触发他们的结果合并。直到递归到A任务。完成最终合并。也就是说，最终合并任务，是由执行最后元素那个线程完成的。
+
+
+
+```java
+    /**
+     * If this task's pending count is zero, returns this task;
+     * otherwise decrements its pending count and returns {@code null}.
+     * This method is designed to be used with {@link #nextComplete} in
+     * completion traversal loops.
+     *
+     * @return this task, if pending count was zero, else {@code null}
+     */
+    public final CountedCompleter<?> firstComplete() {//这个方法来自于CountedCompleter类。通常与nextComplete一起用于结束时结果归并。
+        for (int c;;) {
+            if ((c = pending) == 0)//如果当前确实是完成了，返回自己。
+                return this;
+            else if (weakCompareAndSetPendingCount(c, c - 1))//弱cas，比起强CAS可能需要多次自旋，但是能节约CPU资源。
+                return null;//没完成就返回null
+        }
+    }
+
+```
+
+
+```java
+
+    /**
+     * If this task does not have a completer, invokes {@link
+     * ForkJoinTask#quietlyComplete} and returns {@code null}.  Or, if
+     * the completer's pending count is non-zero, decrements that
+     * pending count and returns {@code null}.  Otherwise, returns the
+     * completer.  This method can be used as part of a completion
+     * traversal loop for homogeneous task hierarchies:
+     *
+     * <pre> {@code
+     * for (CountedCompleter<?> c = firstComplete();
+     *      c != null;
+     *      c = c.nextComplete()) {
+     *   // ... process c ...
+     * }}</pre>
+     *
+     * @return the completer, or {@code null} if none
+     */
+    public final CountedCompleter<?> nextComplete() {//也是来自于CountedCompleter。与firstComplete往往成对使用。用于递归的寻找父任务。即当前任务结束了，也是要找父任务。最终迭代到root任务（index从0开始那个任务）。
+        CountedCompleter<?> p;
+        if ((p = completer) != null)//如果有父亲任务
+            return p.firstComplete();//焦点转换于父任务。去研究父任务是否已经完成。
+        else {
+            quietlyComplete();//如果没有父任务，这里就是结束，然后返回null。 这个和CountedCompleter中的tryComplete调用onComplete相对应。quitlyComplete是来自于ForJoinTask的静默结束方法。不传播结束事件，不触发回调函数。
+            return null;//nextComplete无父，静默结束，然后返回null，一般意味着调用处终止循环。
+        }
+    }
+```
+
+
+2025-05-01小总结：
+至此，我认为concurrentHashMap的主体逻辑我已了解。接下来，从头到尾过一遍代码，看一下有哪些还是遗漏的，以知识点的形式补充在后面。
+
+1.为什么MapReduceMappingsToDoubleTask 等专门针对primitive数据类型又写了一套。因为MapReduceMappingsTask代码基于泛型。实际处理double类型数据时会涉及自动装箱，拆箱操作。单独写一套可以提升性能。
+2. ForEachKeyTask中，结束逻辑无需回调，可以使用propagateCompletion();静默结束。
+3. 分析SearchKeysTask源码。发现你需要设计一个searchFunction。这个函数找到key时，需要返回非null。比如对应value。没找到时返回null。这样这个task才会正常跑。而用户只需要编写searchFunction并且使用concurrentHashMap的searchKeys方法即可。
+4. SearchKeysTask使用result.get() == null 这个判断。result是所有任务共享的，所以找到时能快速终止其他任务。另外quietlyCompleteRoot直接把根任务状态标记为了normal。这样已经fork出来的子任务如果还未执行，线程池不会再调度执行其compute。
+
+2025-05-01 晚21:57分。
+除MapReduceMappings相关大量篇幅重复代码，ConcurrentHashMap实现了行级代码分析/学习。
+
+感悟：
+ConcurrentHashMap在一些底层逻辑上大量使用了位运算，在并发上谨慎控制使用锁的粒度，大量的cas操作提升性能。另外concurrentHashMap提供的reduce方法，使用ForkJoinTask/CountedCompleter框架进行并发任务执行。为程序员编程提供了方便。我们可以直接把待执行的任务放进map。然后写对应的处理函数即可。框架会自动帮我们分解任务。并且我们还可以设置并发度。
